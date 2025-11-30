@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI-Assisted Irrigation Planner</title>
+    <title>AI-Assisted Irrigation Planner - Senior Project</title>
     <link rel="stylesheet" href="styles.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -11,248 +11,492 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 </head>
 <body>
-    <!-- Navigation -->
-    <nav class="navbar">
-        <div class="nav-container">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
             <div class="logo">
                 <i class="fas fa-tint"></i>
-                <span>Irrigation Planner</span>
+                <span>AI-Irrigate</span>
             </div>
-            <ul class="nav-menu">
-                <li><a href="#home">Home</a></li>
-                <li><a href="#planner">Planner</a></li>
-                <li><a href="#map">Map</a></li>
-                <li><a href="#outputs">Results</a></li>
-            </ul>
-        </div>
-    </nav>
-
-    <!-- Home Section -->
-    <section id="home" class="hero">
-        <div class="hero-content">
-            <h1 class="hero-title">AI-Assisted Irrigation Planner</h1>
-            <p class="hero-subtitle">Satellite-powered irrigation layout and hydraulic validation</p>
-            <button class="btn-primary" onclick="scrollToSection('planner')">
-                <i class="fas fa-rocket"></i> Get Started
+            <button class="sidebar-toggle" id="sidebar-toggle">
+                <i class="fas fa-bars"></i>
             </button>
         </div>
-        <div class="hero-background">
-            <div class="wave"></div>
+        <nav class="sidebar-nav">
+            <a href="#" class="nav-item active" data-section="dashboard">
+                <i class="fas fa-th-large"></i>
+                <span>Dashboard</span>
+            </a>
+            <a href="#" class="nav-item" data-section="planner">
+                <i class="fas fa-sliders-h"></i>
+                <span>Planner</span>
+            </a>
+            <a href="#" class="nav-item" data-section="seasonal">
+                <i class="fas fa-calendar-alt"></i>
+                <span>Seasonal Simulation</span>
+            </a>
+            <a href="#" class="nav-item" data-section="summary">
+                <i class="fas fa-chart-line"></i>
+                <span>Summary & Reports</span>
+            </a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="layout-source">
+                <i class="fas fa-info-circle"></i>
+                <span id="layout-source">Layout: Heuristic (local)</span>
+            </div>
         </div>
-    </section>
+    </aside>
 
-    <!-- Inputs & Planner Section -->
-    <section id="planner" class="planner-section">
-        <div class="container">
-            <h2 class="section-title">
-                <i class="fas fa-sliders-h"></i> Irrigation Planner
-            </h2>
+    <!-- Main Content -->
+    <main class="main-content">
+        <!-- Dashboard Section -->
+        <section id="dashboard" class="content-section active">
+            <div class="section-header">
+                <h1><i class="fas fa-th-large"></i> Project Dashboard</h1>
+                <button class="btn-primary" id="new-project-btn">
+                    <i class="fas fa-plus"></i> New Project
+                </button>
+            </div>
             
-            <div class="planner-grid">
-                <!-- Farm Inputs Card -->
-                <div class="input-card">
-                    <div class="card-header">
-                        <i class="fas fa-seedling"></i>
-                        <h3>Farm Inputs</h3>
-                    </div>
-                    <div class="input-group">
-                        <label>
-                            <i class="fas fa-ruler-combined"></i> Area (ha)
-                        </label>
-                        <div class="slider-container">
-                            <input type="range" id="area" min="1" max="100" value="10" step="0.5" class="slider">
-                            <input type="number" id="area-value" value="10" min="1" max="100" step="0.5" class="number-input">
+            <div class="projects-grid" id="projects-grid">
+                <!-- Projects will be dynamically loaded here -->
+            </div>
+
+            <div class="empty-state" id="empty-state" style="display: none;">
+                <i class="fas fa-folder-open"></i>
+                <h3>No Projects Yet</h3>
+                <p>Create your first irrigation project to get started</p>
+                <button class="btn-primary" onclick="document.getElementById('new-project-btn').click()">
+                    <i class="fas fa-plus"></i> Create Project
+                </button>
+            </div>
+        </section>
+
+        <!-- Planner Section -->
+        <section id="planner" class="content-section">
+            <div class="section-header">
+                <h1><i class="fas fa-sliders-h"></i> Irrigation Planner</h1>
+                <div class="current-project-badge" id="current-project-badge" style="display: none;">
+                    <i class="fas fa-map-marker-alt"></i>
+                    <span id="current-project-name">No project selected</span>
+                </div>
+            </div>
+
+            <div class="planner-container">
+                <div class="planner-grid">
+                    <!-- Farm Inputs Card -->
+                    <div class="input-card">
+                        <div class="card-header">
+                            <i class="fas fa-seedling"></i>
+                            <h3>Farm Inputs</h3>
+                        </div>
+                        <div class="input-group">
+                            <label>
+                                <i class="fas fa-tag"></i> Crop Type
+                            </label>
+                            <select id="crop-type" class="select-input">
+                                <option value="Sugarcane">Sugarcane</option>
+                                <option value="Rice">Rice</option>
+                                <option value="Corn">Corn</option>
+                                <option value="Vegetables">Vegetables</option>
+                                <option value="Orchards">Orchards</option>
+                                <option value="Pasture">Pasture</option>
+                            </select>
+                        </div>
+                        <div class="input-group">
+                            <label>
+                                <i class="fas fa-ruler-combined"></i> Area (ha)
+                            </label>
+                            <div class="slider-container">
+                                <input type="range" id="area" min="1" max="100" value="10" step="0.5" class="slider">
+                                <input type="number" id="area-value" value="10" min="1" max="100" step="0.5" class="number-input">
+                            </div>
+                        </div>
+                        <div class="input-group">
+                            <label>
+                                <i class="fas fa-leaf"></i> Crop Coefficient (Kc)
+                            </label>
+                            <select id="kc" class="select-input">
+                                <option value="0.3">0.3 - Fallow</option>
+                                <option value="0.5">0.5 - Pasture</option>
+                                <option value="0.7">0.7 - Vegetables</option>
+                                <option value="0.9">0.9 - Row Crops</option>
+                                <option value="1.1">1.1 - Orchards</option>
+                                <option value="1.2">1.2 - Dense Canopy</option>
+                            </select>
+                        </div>
+                        <div class="input-group">
+                            <label>
+                                <i class="fas fa-sun"></i> ET₀ (mm/day)
+                            </label>
+                            <input type="number" id="eto" value="5.0" min="0" max="15" step="0.1" class="number-input">
+                        </div>
+                        <div class="input-group">
+                            <label>
+                                <i class="fas fa-cloud-rain"></i> Rainfall (mm/day)
+                            </label>
+                            <input type="number" id="rainfall" value="0" min="0" max="50" step="0.1" class="number-input">
                         </div>
                     </div>
-                    <div class="input-group">
-                        <label>
-                            <i class="fas fa-leaf"></i> Crop Coefficient (Kc)
-                        </label>
-                        <select id="kc" class="select-input">
-                            <option value="0.3">0.3 - Fallow</option>
-                            <option value="0.5">0.5 - Pasture</option>
-                            <option value="0.7">0.7 - Vegetables</option>
-                            <option value="0.9">0.9 - Row Crops</option>
-                            <option value="1.1">1.1 - Orchards</option>
-                            <option value="1.2">1.2 - Dense Canopy</option>
-                        </select>
-                    </div>
-                    <div class="input-group">
-                        <label>
-                            <i class="fas fa-sun"></i> ET₀ (mm/day)
-                        </label>
-                        <input type="number" id="eto" value="5.0" min="0" max="15" step="0.1" class="number-input">
-                    </div>
-                    <div class="input-group">
-                        <label>
-                            <i class="fas fa-cloud-rain"></i> Rainfall (mm/day)
-                        </label>
-                        <input type="number" id="rainfall" value="0" min="0" max="50" step="0.1" class="number-input">
+
+                    <!-- Hydraulic Settings Card -->
+                    <div class="input-card">
+                        <div class="card-header">
+                            <i class="fas fa-cog"></i>
+                            <h3>Hydraulic Settings</h3>
+                        </div>
+                        <div class="input-group">
+                            <label>
+                                <i class="fas fa-pipe"></i> Main Pipe Diameter (mm)
+                            </label>
+                            <select id="main-diameter" class="select-input">
+                                <option value="50">50 mm</option>
+                                <option value="63">63 mm</option>
+                                <option value="75">75 mm</option>
+                                <option value="90">90 mm</option>
+                                <option value="110">110 mm</option>
+                                <option value="125">125 mm</option>
+                                <option value="140">140 mm</option>
+                                <option value="160">160 mm</option>
+                            </select>
+                        </div>
+                        <div class="input-group">
+                            <label>
+                                <i class="fas fa-arrows-alt-h"></i> Max Lateral Length (m)
+                            </label>
+                            <select id="max-lateral" class="select-input">
+                                <option value="50">50 m</option>
+                                <option value="75">75 m</option>
+                                <option value="100">100 m</option>
+                                <option value="125">125 m</option>
+                                <option value="150">150 m</option>
+                                <option value="200">200 m</option>
+                            </select>
+                        </div>
                     </div>
                 </div>
 
-                <!-- Hydraulic Settings Card -->
-                <div class="input-card">
-                    <div class="card-header">
-                        <i class="fas fa-cog"></i>
-                        <h3>Hydraulic Settings</h3>
+                <!-- Action Buttons -->
+                <div class="action-buttons">
+                    <button class="btn-action" id="calculate-demand">
+                        <i class="fas fa-calculator"></i> Recalculate
+                    </button>
+                    <button class="btn-action" id="generate-layout">
+                        <i class="fas fa-project-diagram"></i> Generate Layout
+                    </button>
+                    <button class="btn-action" id="validate-hydraulics">
+                        <i class="fas fa-check-circle"></i> Validate
+                    </button>
+                    <button class="btn-action" id="show-bom">
+                        <i class="fas fa-list"></i> BOM
+                    </button>
+                    <button class="btn-action btn-primary" id="finalize-design">
+                        <i class="fas fa-check-double"></i> Finalize Design
+                    </button>
+                </div>
+
+                <!-- Map Container -->
+                <div class="map-wrapper">
+                    <h3 class="map-title">
+                        <i class="fas fa-map"></i> Interactive Layout Map
+                    </h3>
+                    <div id="map-container" class="map-container"></div>
+                </div>
+
+                <!-- Output Cards -->
+                <div class="outputs-grid">
+                    <div class="output-card">
+                        <div class="output-icon">
+                            <i class="fas fa-tint"></i>
+                        </div>
+                        <div class="output-content">
+                            <h3>Water Demand</h3>
+                            <p class="output-value" id="water-demand">0</p>
+                            <p class="output-unit">L/day</p>
+                        </div>
                     </div>
-                    <div class="input-group">
-                        <label>
-                            <i class="fas fa-pipe"></i> Main Pipe Diameter (mm)
-                        </label>
-                        <select id="main-diameter" class="select-input">
-                            <option value="50">50 mm</option>
-                            <option value="63">63 mm</option>
-                            <option value="75">75 mm</option>
-                            <option value="90">90 mm</option>
-                            <option value="110">110 mm</option>
-                            <option value="125">125 mm</option>
-                            <option value="140">140 mm</option>
-                            <option value="160">160 mm</option>
-                        </select>
+
+                    <div class="output-card">
+                        <div class="output-icon">
+                            <i class="fas fa-ruler"></i>
+                        </div>
+                        <div class="output-content">
+                            <h3>Pipe Length</h3>
+                            <p class="output-value" id="pipe-length">0</p>
+                            <p class="output-unit">m</p>
+                        </div>
                     </div>
-                    <div class="input-group">
-                        <label>
-                            <i class="fas fa-arrows-alt-h"></i> Max Lateral Length (m)
-                        </label>
-                        <select id="max-lateral" class="select-input">
-                            <option value="50">50 m</option>
-                            <option value="75">75 m</option>
-                            <option value="100">100 m</option>
-                            <option value="125">125 m</option>
-                            <option value="150">150 m</option>
-                            <option value="200">200 m</option>
-                        </select>
+
+                    <div class="output-card">
+                        <div class="output-icon">
+                            <i class="fas fa-chart-area"></i>
+                        </div>
+                        <div class="output-content">
+                            <h3>Head Loss</h3>
+                            <p class="output-value" id="head-loss">0</p>
+                            <p class="output-unit">%</p>
+                        </div>
                     </div>
+
+                    <div class="output-card">
+                        <div class="output-icon">
+                            <i class="fas fa-arrows-alt-h"></i>
+                        </div>
+                        <div class="output-content">
+                            <h3>Max Lateral</h3>
+                            <p class="output-value" id="max-lateral-output">0</p>
+                            <p class="output-unit">m</p>
+                        </div>
+                    </div>
+
+                    <div class="output-card validation-card" id="validation-card">
+                        <div class="output-icon">
+                            <i class="fas fa-check-circle" id="validation-icon"></i>
+                        </div>
+                        <div class="output-content">
+                            <h3>Validation</h3>
+                            <p class="output-value" id="validation-status">Pending</p>
+                            <p class="output-unit" id="validation-notes"></p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- BOM Table -->
+                <div class="bom-container" id="bom-container" style="display: none;">
+                    <h3 class="bom-title">
+                        <i class="fas fa-list-alt"></i> Bill of Materials
+                    </h3>
+                    <table class="bom-table" id="bom-table">
+                        <thead>
+                            <tr>
+                                <th>Item</th>
+                                <th>Quantity</th>
+                                <th>Unit</th>
+                                <th>Unit Price</th>
+                                <th>Total</th>
+                            </tr>
+                        </thead>
+                        <tbody id="bom-tbody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- Seasonal Simulation Section -->
+        <section id="seasonal" class="content-section">
+            <div class="section-header">
+                <h1><i class="fas fa-calendar-alt"></i> Seasonal Simulation</h1>
+                <div class="scenario-selector">
+                    <label>Scenario:</label>
+                    <select id="scenario-preset" class="select-input">
+                        <option value="normal">Normal Year</option>
+                        <option value="dry">Dry Year</option>
+                        <option value="wet">Wet Year</option>
+                    </select>
+                    <button class="btn-action" id="run-seasonal-sim">
+                        <i class="fas fa-play"></i> Run Simulation
+                    </button>
                 </div>
             </div>
 
-            <!-- Action Buttons -->
-            <div class="action-buttons">
-                <button class="btn-action" id="calculate-demand">
-                    <i class="fas fa-calculator"></i> Calculate Demand
+            <div class="seasonal-container">
+                <div class="seasonal-inputs">
+                    <div class="input-card">
+                        <div class="card-header">
+                            <i class="fas fa-seedling"></i>
+                            <h3>Crop Growth Stages</h3>
+                        </div>
+                        <div class="input-group">
+                            <label>Initial Stage Kc</label>
+                            <input type="number" id="kc-initial" value="0.3" min="0" max="2" step="0.1" class="number-input">
+                        </div>
+                        <div class="input-group">
+                            <label>Mid Stage Kc</label>
+                            <input type="number" id="kc-mid" value="1.0" min="0" max="2" step="0.1" class="number-input">
+                        </div>
+                        <div class="input-group">
+                            <label>Late Stage Kc</label>
+                            <input type="number" id="kc-late" value="0.7" min="0" max="2" step="0.1" class="number-input">
+                        </div>
+                    </div>
+
+                    <div class="input-card">
+                        <div class="card-header">
+                            <i class="fas fa-table"></i>
+                            <h3>Monthly Data</h3>
+                        </div>
+                        <div class="monthly-table-container">
+                            <table class="monthly-table">
+                                <thead>
+                                    <tr>
+                                        <th>Month</th>
+                                        <th>ET₀ (mm/day)</th>
+                                        <th>Rainfall (mm/day)</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="monthly-data-tbody">
+                                    <!-- Will be populated by JavaScript -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="seasonal-outputs">
+                    <div class="chart-card">
+                        <h3><i class="fas fa-chart-line"></i> Monthly Water Demand</h3>
+                        <canvas id="seasonal-chart"></canvas>
+                    </div>
+                    <div class="summary-card" id="seasonal-summary">
+                        <h3><i class="fas fa-info-circle"></i> Simulation Summary</h3>
+                        <div id="seasonal-summary-content">
+                            <p>Run simulation to see results</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Summary & Reports Section -->
+        <section id="summary" class="content-section">
+            <div class="section-header">
+                <h1><i class="fas fa-chart-line"></i> Summary & Reports</h1>
+                <button class="btn-primary" id="download-report-btn">
+                    <i class="fas fa-download"></i> Download Report
                 </button>
-                <button class="btn-action" id="generate-layout">
-                    <i class="fas fa-project-diagram"></i> Generate Layout
+            </div>
+
+            <div class="summary-container">
+                <!-- KPI Cards -->
+                <div class="kpi-grid">
+                    <div class="kpi-card">
+                        <div class="kpi-icon">
+                            <i class="fas fa-tachometer-alt"></i>
+                        </div>
+                        <div class="kpi-content">
+                            <h3>Head Loss</h3>
+                            <p class="kpi-value" id="kpi-headloss">0%</p>
+                            <p class="kpi-target">Target: &lt;5%</p>
+                            <div class="kpi-bar">
+                                <div class="kpi-bar-fill" id="kpi-headloss-bar"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="kpi-card">
+                        <div class="kpi-icon">
+                            <i class="fas fa-ruler"></i>
+                        </div>
+                        <div class="kpi-content">
+                            <h3>Max Lateral</h3>
+                            <p class="kpi-value" id="kpi-lateral">0 m</p>
+                            <p class="kpi-target">Constraint: 100 m</p>
+                            <div class="kpi-bar">
+                                <div class="kpi-bar-fill" id="kpi-lateral-bar"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="kpi-card">
+                        <div class="kpi-icon">
+                            <i class="fas fa-dollar-sign"></i>
+                        </div>
+                        <div class="kpi-content">
+                            <h3>Total Cost</h3>
+                            <p class="kpi-value" id="kpi-cost">$0</p>
+                            <p class="kpi-target" id="kpi-budget">Budget: Not set</p>
+                        </div>
+                    </div>
+
+                    <div class="kpi-card">
+                        <div class="kpi-icon">
+                            <i class="fas fa-pipe"></i>
+                        </div>
+                        <div class="kpi-content">
+                            <h3>Pipe Length</h3>
+                            <p class="kpi-value" id="kpi-pipelength">0 m</p>
+                            <p class="kpi-target">Total System</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Charts -->
+                <div class="charts-grid">
+                    <div class="chart-card">
+                        <h3><i class="fas fa-chart-pie"></i> Cost Breakdown</h3>
+                        <canvas id="cost-chart"></canvas>
+                    </div>
+
+                    <div class="chart-card">
+                        <h3><i class="fas fa-chart-bar"></i> Pipe Length by Zone</h3>
+                        <canvas id="zone-chart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Project Summary Card -->
+                <div class="summary-card-large" id="project-summary-card">
+                    <h3><i class="fas fa-file-alt"></i> Current Project Summary</h3>
+                    <div id="project-summary-content">
+                        <p>No project selected. Go to Dashboard to select or create a project.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- New Project Modal -->
+    <div id="new-project-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2><i class="fas fa-plus"></i> New Project</h2>
+                <button class="modal-close" onclick="closeModal('new-project-modal')">
+                    <i class="fas fa-times"></i>
                 </button>
-                <button class="btn-action" id="validate-hydraulics">
-                    <i class="fas fa-check-circle"></i> Validate Hydraulics
-                </button>
-                <button class="btn-action" id="show-bom">
-                    <i class="fas fa-list"></i> BOM
-                </button>
-                <button class="btn-action btn-primary" id="finalize-design">
-                    <i class="fas fa-check-double"></i> Finalize Design
-                </button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Project Name</label>
+                    <input type="text" id="project-name-input" class="form-input" placeholder="e.g., Farm A - Sugarcane">
+                </div>
+                <div class="form-group">
+                    <label>Location / Province</label>
+                    <input type="text" id="project-location-input" class="form-input" placeholder="e.g., Nakhon Ratchasima">
+                </div>
+                <div class="form-group">
+                    <label>Area (ha)</label>
+                    <input type="number" id="project-area-input" class="form-input" min="1" max="100" step="0.5" value="10">
+                </div>
+                <div class="form-group">
+                    <label>Crop Type</label>
+                    <select id="project-crop-input" class="form-input">
+                        <option value="Sugarcane">Sugarcane</option>
+                        <option value="Rice">Rice</option>
+                        <option value="Corn">Corn</option>
+                        <option value="Vegetables">Vegetables</option>
+                        <option value="Orchards">Orchards</option>
+                        <option value="Pasture">Pasture</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-action" onclick="closeModal('new-project-modal')">Cancel</button>
+                <button class="btn-primary" id="save-project-btn">Create Project</button>
             </div>
         </div>
-    </section>
-
-    <!-- Interactive Map Section -->
-    <section id="map" class="map-section">
-        <div class="container">
-            <h2 class="section-title">
-                <i class="fas fa-map"></i> Interactive Layout Map
-            </h2>
-            <div id="map-container" class="map-container"></div>
-        </div>
-    </section>
-
-    <!-- Output Panels Section -->
-    <section id="outputs" class="outputs-section">
-        <div class="container">
-            <h2 class="section-title">
-                <i class="fas fa-chart-line"></i> Results & Validation
-            </h2>
-            
-            <div class="outputs-grid">
-                <div class="output-card">
-                    <div class="output-icon">
-                        <i class="fas fa-tint"></i>
-                    </div>
-                    <div class="output-content">
-                        <h3>Water Demand</h3>
-                        <p class="output-value" id="water-demand">0</p>
-                        <p class="output-unit">L/day</p>
-                    </div>
-                </div>
-
-                <div class="output-card">
-                    <div class="output-icon">
-                        <i class="fas fa-ruler"></i>
-                    </div>
-                    <div class="output-content">
-                        <h3>Pipe Length</h3>
-                        <p class="output-value" id="pipe-length">0</p>
-                        <p class="output-unit">m</p>
-                    </div>
-                </div>
-
-                <div class="output-card">
-                    <div class="output-icon">
-                        <i class="fas fa-chart-area"></i>
-                    </div>
-                    <div class="output-content">
-                        <h3>Head Loss</h3>
-                        <p class="output-value" id="head-loss">0</p>
-                        <p class="output-unit">%</p>
-                    </div>
-                </div>
-
-                <div class="output-card">
-                    <div class="output-icon">
-                        <i class="fas fa-arrows-alt-h"></i>
-                    </div>
-                    <div class="output-content">
-                        <h3>Max Lateral</h3>
-                        <p class="output-value" id="max-lateral-output">0</p>
-                        <p class="output-unit">m</p>
-                    </div>
-                </div>
-
-                <div class="output-card validation-card" id="validation-card">
-                    <div class="output-icon">
-                        <i class="fas fa-check-circle" id="validation-icon"></i>
-                    </div>
-                    <div class="output-content">
-                        <h3>Validation</h3>
-                        <p class="output-value" id="validation-status">Pending</p>
-                        <p class="output-unit" id="validation-notes"></p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- BOM Table -->
-            <div class="bom-container" id="bom-container" style="display: none;">
-                <h3 class="bom-title">
-                    <i class="fas fa-list-alt"></i> Bill of Materials
-                </h3>
-                <table class="bom-table" id="bom-table">
-                    <thead>
-                        <tr>
-                            <th>Item</th>
-                            <th>Quantity</th>
-                            <th>Unit</th>
-                            <th>Unit Price</th>
-                            <th>Total</th>
-                        </tr>
-                    </thead>
-                    <tbody id="bom-tbody">
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </section>
+    </div>
 
     <!-- Finalize Design Modal -->
     <div id="finalize-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
                 <h2><i class="fas fa-check-double"></i> Design Summary</h2>
-                <button class="modal-close" onclick="closeModal()">
+                <button class="modal-close" onclick="closeModal('finalize-modal')">
                     <i class="fas fa-times"></i>
                 </button>
             </div>
@@ -260,7 +504,7 @@
                 <!-- Content will be populated by JavaScript -->
             </div>
             <div class="modal-footer">
-                <button class="btn-primary" onclick="closeModal()">Close</button>
+                <button class="btn-primary" onclick="closeModal('finalize-modal')">Close</button>
             </div>
         </div>
     </div>
@@ -268,4 +512,3 @@
     <script src="script.js"></script>
 </body>
 </html>
-
