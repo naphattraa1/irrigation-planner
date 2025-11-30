@@ -178,6 +178,52 @@
                                 <option value="200">200 m</option>
                             </select>
                         </div>
+                        <div class="input-group">
+                            <label>
+                                <i class="fas fa-project-diagram"></i> Layout Mode
+                            </label>
+                            <select id="layout-mode" class="select-input">
+                                <option value="heuristic">Heuristic Layout</option>
+                                <option value="ai">AI (stub) Layout</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <!-- Satellite Data Card -->
+                    <div class="input-card">
+                        <div class="card-header">
+                            <i class="fas fa-satellite"></i>
+                            <h3>Satellite / Field Context</h3>
+                        </div>
+                        <div class="input-group">
+                            <label>
+                                <i class="fas fa-chart-line"></i> NDVI Mean
+                            </label>
+                            <div id="satellite-ndvi" style="padding: 0.5rem; background: var(--grey-light); border-radius: var(--radius-sm);">
+                                Not loaded yet
+                            </div>
+                        </div>
+                        <div class="input-group">
+                            <label>
+                                <i class="fas fa-mountain"></i> Slope Class
+                            </label>
+                            <div id="satellite-slope" style="padding: 0.5rem; background: var(--grey-light); border-radius: var(--radius-sm);">
+                                Not loaded yet
+                            </div>
+                        </div>
+                        <div class="input-group">
+                            <label>
+                                <i class="fas fa-landmark"></i> Soil Type
+                            </label>
+                            <div id="satellite-soil" style="padding: 0.5rem; background: var(--grey-light); border-radius: var(--radius-sm);">
+                                Not loaded yet
+                            </div>
+                        </div>
+                        <div class="input-group" style="margin-top: 1rem;">
+                            <button class="btn-action" id="refresh-satellite" style="width: 100%;">
+                                <i class="fas fa-sync"></i> Refresh from Satellite
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -205,6 +251,9 @@
                     <h3 class="map-title">
                         <i class="fas fa-map"></i> Interactive Layout Map
                     </h3>
+                    <div style="font-size: 0.875rem; color: var(--text-medium); margin-bottom: 0.5rem;">
+                        <i class="fas fa-info-circle"></i> Blue moving dots represent simulated water flow
+                    </div>
                     <div id="map-container" class="map-container"></div>
                 </div>
 
@@ -353,6 +402,12 @@
                         <h3><i class="fas fa-chart-line"></i> Monthly Water Demand</h3>
                         <canvas id="seasonal-chart"></canvas>
                     </div>
+                    <div class="chart-card">
+                        <h3><i class="fas fa-chart-bar"></i> ET₀ vs Rainfall</h3>
+                        <canvas id="seasonal-eto-chart"></canvas>
+                    </div>
+                </div>
+                <div class="seasonal-outputs" style="grid-template-columns: 1fr;">
                     <div class="summary-card" id="seasonal-summary">
                         <h3><i class="fas fa-info-circle"></i> Simulation Summary</h3>
                         <div id="seasonal-summary-content">
@@ -367,9 +422,14 @@
         <section id="summary" class="content-section">
             <div class="section-header">
                 <h1><i class="fas fa-chart-line"></i> Summary & Reports</h1>
-                <button class="btn-primary" id="download-report-btn">
-                    <i class="fas fa-download"></i> Download Report
-                </button>
+                <div style="display: flex; gap: 1rem;">
+                    <button class="btn-action" id="show-design-json-btn">
+                        <i class="fas fa-code"></i> Show Design JSON
+                    </button>
+                    <button class="btn-primary" id="download-report-btn">
+                        <i class="fas fa-download"></i> Download Report
+                    </button>
+                </div>
             </div>
 
             <div class="summary-container">
@@ -505,6 +565,31 @@
             </div>
             <div class="modal-footer">
                 <button class="btn-primary" onclick="closeModal('finalize-modal')">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Design JSON Modal -->
+    <div id="design-json-modal" class="modal">
+        <div class="modal-content" style="max-width: 800px;">
+            <div class="modal-header">
+                <h2><i class="fas fa-code"></i> Design JSON Schema</h2>
+                <button class="modal-close" onclick="closeModal('design-json-modal')">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div style="margin-bottom: 1rem;">
+                    <h3 style="margin-bottom: 0.5rem;">Design Request:</h3>
+                    <pre id="design-request-json" style="background: var(--grey-light); padding: 1rem; border-radius: var(--radius-sm); overflow-x: auto; font-size: 0.875rem; max-height: 300px; overflow-y: auto;"></pre>
+                </div>
+                <div>
+                    <h3 style="margin-bottom: 0.5rem;">Design Response:</h3>
+                    <pre id="design-response-json" style="background: var(--grey-light); padding: 1rem; border-radius: var(--radius-sm); overflow-x: auto; font-size: 0.875rem; max-height: 300px; overflow-y: auto;"></pre>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-primary" onclick="closeModal('design-json-modal')">Close</button>
             </div>
         </div>
     </div>

@@ -14,11 +14,15 @@ const AppState = {
         validationNotes: [],
         bom: []
     },
+    satelliteSummary: null,
+    layoutMode: 'heuristic', // 'heuristic' or 'ai'
     charts: {
         seasonal: null,
         cost: null,
-        zone: null
-    }
+        zone: null,
+        seasonalETO: null
+    },
+    flowAnimation: null // For water flow animation on map
 };
 
 // Load projects from localStorage
@@ -37,6 +41,196 @@ function saveProjects() {
 // Get current project
 function getCurrentProject() {
     return AppState.projects.find(p => p.id === AppState.currentProjectId);
+}
+
+// ============================================
+// SATELLITE PREPROCESSING (STUB)
+// ============================================
+// This module provides satellite/remote-sensing data preprocessing capabilities.
+// Currently returns mock data, but can be extended to call external APIs
+// (e.g., Google Earth Engine, Sentinel Hub, etc.) in the future.
+
+/**
+ * Preprocess satellite data for a given farm boundary.
+ * This is a stub function that simulates calling an external satellite API.
+ * 
+ * @param {Array} boundaryLatLngs - Array of Leaflet LatLng objects representing the farm boundary
+ * @returns {Object} Satellite data summary with NDVI, slope, and soil type
+ */
+function preprocessSatelliteData(boundaryLatLngs) {
+    // TODO: Replace with actual API call to external satellite data service
+    // Example: Google Earth Engine, Sentinel Hub, etc.
+    // const response = await fetch('/api/satellite-data', {
+    //     method: 'POST',
+    //     body: JSON.stringify({ boundary: boundaryLatLngs })
+    // });
+    // const data = await response.json();
+    
+    // Mock data generation based on boundary
+    // In a real implementation, this would be fetched from satellite imagery
+    const latLngs = boundaryLatLngs.map(ll => 
+        Array.isArray(ll) ? { lat: ll[0], lng: ll[1] } : ll
+    );
+    
+    // Calculate approximate area for mock data variation
+    const bounds = L.latLngBounds(latLngs);
+    const center = bounds.getCenter();
+    
+    // Mock NDVI (Normalized Difference Vegetation Index) - ranges from -1 to 1, typically 0 to 1 for vegetation
+    const ndviMean = 0.6 + (Math.random() * 0.3); // 0.6 to 0.9 (healthy vegetation)
+    
+    // Mock slope classification
+    const slopeOptions = ['Flat', 'Moderate', 'Steep'];
+    const slopeClass = slopeOptions[Math.floor(Math.random() * slopeOptions.length)];
+    
+    // Mock soil type
+    const soilTypes = ['Loam', 'Clay', 'Sandy Loam', 'Clay Loam', 'Silt Loam'];
+    const soilType = soilTypes[Math.floor(Math.random() * soilTypes.length)];
+    
+    const satelliteData = {
+        ndviMean: parseFloat(ndviMean.toFixed(3)),
+        slopeClass: slopeClass,
+        soilType: soilType,
+        timestamp: new Date().toISOString()
+    };
+    
+    // Store in AppState for use throughout the application
+    AppState.satelliteSummary = satelliteData;
+    
+    return satelliteData;
+}
+
+/**
+ * Update the satellite data display in the UI.
+ * 
+ * @param {Object} satelliteData - Satellite data object from preprocessSatelliteData()
+ */
+function updateSatelliteDisplay(satelliteData) {
+    const ndviEl = document.getElementById('satellite-ndvi');
+    const slopeEl = document.getElementById('satellite-slope');
+    const soilEl = document.getElementById('satellite-soil');
+    
+    if (ndviEl) {
+        ndviEl.textContent = satelliteData.ndviMean ? satelliteData.ndviMean.toFixed(3) : 'N/A';
+    }
+    
+    if (slopeEl) {
+        slopeEl.textContent = satelliteData.slopeClass || 'N/A';
+    }
+    
+    if (soilEl) {
+        soilEl.textContent = satelliteData.soilType || 'N/A';
+    }
+}
+
+// ============================================
+// DESIGN REQUEST / RESPONSE SCHEMA
+// ============================================
+// These functions define the logical input/output structure of the irrigation design system.
+// They can be used to:
+// - Document the data flow in reports
+// - Prepare data for backend API calls
+// - Convert between UI state and structured design data
+
+/**
+ * Build a design request object from current UI inputs.
+ * This represents the input schema for the irrigation design system.
+ * 
+ * @returns {Object} Design request object containing all relevant inputs
+ */
+function buildDesignRequestFromUI() {
+    const area = parseFloat(document.getElementById('area')?.value || 10);
+    const cropType = document.getElementById('crop-type')?.value || 'Sugarcane';
+    const kc = parseFloat(document.getElementById('kc')?.value || 0.9);
+    const eto = parseFloat(document.getElementById('eto')?.value || 5.0);
+    const rainfall = parseFloat(document.getElementById('rainfall')?.value || 0);
+    const mainDiameter = parseFloat(document.getElementById('main-diameter')?.value || 110);
+    const maxLateral = parseFloat(document.getElementById('max-lateral')?.value || 100);
+    const project = getCurrentProject();
+    
+    // Get boundary coordinates from map
+    let boundary = [];
+    if (boundaryLayer) {
+        const latLngs = boundaryLayer.getLatLngs()[0] || boundaryLayer.getLatLngs();
+        boundary = latLngs.map(ll => 
+            Array.isArray(ll) ? ll : [ll.lat, ll.lng]
+        );
+    }
+    
+    // Get scenario from seasonal simulation
+    const scenario = document.getElementById('scenario-preset')?.value || 'normal';
+    
+    return {
+        boundary: boundary,
+        general: {
+            area: area,
+            cropType: cropType,
+            location: project?.location || 'N/A',
+            province: project?.location || 'N/A'
+        },
+        waterModel: {
+            kc: kc,
+            eto: eto,
+            rainfall: rainfall
+        },
+        hydraulics: {
+            mainDiameter: mainDiameter,
+            maxLateral: maxLateral
+        },
+        designOptions: {
+            layoutSource: AppState.layoutMode === 'ai' ? 'AI (stub)' : 'Heuristic (local)',
+            scenario: scenario
+        },
+        timestamp: new Date().toISOString()
+    };
+}
+
+/**
+ * Build a design response object from current calculation state.
+ * This represents the output schema for the irrigation design system.
+ * 
+ * @returns {Object} Design response object containing all calculated results
+ */
+function buildDesignResponseFromState() {
+    const state = AppState.calculationState;
+    const zones = calculateZones();
+    const bomTotal = state.bom.reduce((sum, item) => sum + item.total, 0);
+    const area = parseFloat(document.getElementById('area')?.value || 10);
+    const pipeLength = state.pipeLength;
+    const lengthPerZone = Math.ceil(pipeLength / zones);
+    
+    return {
+        waterDemandLday: state.waterDemand,
+        pipeLengthM: state.pipeLength,
+        headLossPercent: state.headLoss,
+        maxLateralLengthM: state.maxLateralLength,
+        zones: {
+            count: zones,
+            lengthPerZoneM: lengthPerZone,
+            details: Array.from({ length: zones }, (_, i) => ({
+                zoneId: i + 1,
+                lengthM: lengthPerZone
+            }))
+        },
+        validation: {
+            status: state.validationStatus,
+            notes: state.validationNotes
+        },
+        satelliteSummary: AppState.satelliteSummary || {
+            ndviMean: null,
+            slopeClass: null,
+            soilType: null
+        },
+        bom: state.bom.map(item => ({
+            item: item.item,
+            quantity: item.quantity,
+            unit: item.unit,
+            unitPrice: item.unitPrice,
+            total: item.total
+        })),
+        totalCost: bomTotal,
+        timestamp: new Date().toISOString()
+    };
 }
 
 // ============================================
@@ -316,6 +510,30 @@ function setupEventListeners() {
         }
     });
 
+    // Layout mode selector
+    const layoutModeSelect = document.getElementById('layout-mode');
+    if (layoutModeSelect) {
+        layoutModeSelect.addEventListener('change', function() {
+            AppState.layoutMode = this.value;
+        });
+    }
+
+    // Satellite data refresh button
+    const refreshSatelliteBtn = document.getElementById('refresh-satellite');
+    if (refreshSatelliteBtn) {
+        refreshSatelliteBtn.addEventListener('click', function() {
+            if (!boundaryLayer) {
+                showNotification('Please generate a layout first to define the boundary', 'warning');
+                return;
+            }
+            
+            const latLngs = boundaryLayer.getLatLngs()[0] || boundaryLayer.getLatLngs();
+            const satelliteData = preprocessSatelliteData(latLngs);
+            updateSatelliteDisplay(satelliteData);
+            showNotification('Satellite data refreshed!', 'success');
+        });
+    }
+
     // Action buttons
     const calculateBtn = document.getElementById('calculate-demand');
     if (calculateBtn) calculateBtn.addEventListener('click', calculateAll);
@@ -347,6 +565,12 @@ function setupEventListeners() {
     const downloadBtn = document.getElementById('download-report-btn');
     if (downloadBtn) downloadBtn.addEventListener('click', downloadReport);
 
+    // Show Design JSON button
+    const showDesignJsonBtn = document.getElementById('show-design-json-btn');
+    if (showDesignJsonBtn) {
+        showDesignJsonBtn.addEventListener('click', showDesignJSON);
+    }
+
     // Modal close handlers
     document.querySelectorAll('.modal').forEach(modal => {
         modal.addEventListener('click', function(e) {
@@ -369,6 +593,8 @@ function syncSliderAndInput() {
 // CALCULATION FUNCTIONS
 // ============================================
 
+// Water model & rules (FAO-56 style)
+// ETc = Kc * ET0, net irrigation = max(0, ETc - effectiveRainfall)
 function calculateWaterDemand() {
     const area = parseFloat(document.getElementById('area')?.value || 10);
     const kc = parseFloat(document.getElementById('kc')?.value || 0.9);
@@ -391,6 +617,7 @@ function calculatePipeLength() {
     return Math.round(estimatedLength);
 }
 
+// Hydraulic validation using Hazen–Williams equation
 function calculateHeadLoss() {
     const waterDemand = calculateWaterDemand();
     const flowRate = waterDemand / (24 * 3600);
@@ -435,6 +662,7 @@ function calculateZones() {
     return Math.max(1, zones);
 }
 
+// Bill of Materials estimation based on pipe length, fittings, valves, emitters, pump, controller
 function calculateBOM() {
     const area = parseFloat(document.getElementById('area')?.value || 10);
     const diameter = parseFloat(document.getElementById('main-diameter')?.value || 110);
@@ -597,32 +825,106 @@ function initializeMap() {
     mapInitialized = true;
 }
 
-function generateLayout() {
-    // AI Integration Hook: Currently uses heuristic, can be replaced with AI API call
-    const layoutSource = callAiLayout();
-    updateLayoutSource(layoutSource);
-
+// Heuristic network generation (MST/Steiner-like grid layout)
+async function generateLayout() {
     if (!mapInitialized) {
         initializeMap();
     }
 
+    // Build layout input from UI
+    const layoutInput = buildDesignRequestFromUI();
+    
+    // Call AI layout hook (currently returns stub, can be replaced with AI API call)
+    const result = await callAiLayout(layoutInput);
+    updateLayoutSource(result.source);
+    
+    // Draw layout on map
+    drawLayoutOnMap(result);
+    
+    showNotification('Layout generated successfully!', 'success');
+}
+
+/**
+ * AI Layout Integration Hook
+ * This function can be extended to call an actual AI backend service.
+ * For now, it returns a stub result based on the selected layout mode.
+ * 
+ * @param {Object} layoutInput - Design request object from buildDesignRequestFromUI()
+ * @returns {Promise<Object>} Layout result with source, layoutType, and geometry data
+ */
+async function callAiLayout(layoutInput) {
+    // Determine layout mode
+    const mode = AppState.layoutMode || 'heuristic';
+    
+    if (mode === 'ai') {
+        // TODO: Replace with actual AI API call
+        // Example:
+        // const response = await fetch('/api/ai-generate-layout', {
+        //     method: 'POST',
+        //     headers: { 'Content-Type': 'application/json' },
+        //     body: JSON.stringify(layoutInput)
+        // });
+        // const aiResult = await response.json();
+        // return {
+        //     source: 'AI (stub)',
+        //     layoutType: aiResult.layoutType,
+        //     nodes: aiResult.nodes,
+        //     edges: aiResult.edges,
+        //     note: 'AI-generated layout'
+        // };
+        
+        // Stub AI response
+        return {
+            source: 'AI (stub)',
+            layoutType: 'grid',
+            note: 'AI stub - would generate optimized layout here'
+        };
+    } else {
+        // Heuristic mode (current implementation)
+        return {
+            source: 'Heuristic (local)',
+            layoutType: 'grid',
+            note: 'Heuristic grid layout generated locally'
+        };
+    }
+}
+
+/**
+ * Draw layout on map based on layout result.
+ * This function handles the actual drawing of pipes, nodes, and markers on the Leaflet map.
+ * Currently uses heuristic drawing, but can be extended to use AI-generated node/edge data.
+ * 
+ * @param {Object} layoutResult - Result from callAiLayout()
+ */
+function drawLayoutOnMap(layoutResult) {
+    // Clear existing layout
     if (pipelineLayer) {
         map.removeLayer(pipelineLayer);
+        pipelineLayer = null;
+    }
+    
+    // Stop any existing flow animation
+    if (AppState.flowAnimation) {
+        clearInterval(AppState.flowAnimation.interval);
+        AppState.flowAnimation.markers.forEach(m => map.removeLayer(m));
+        AppState.flowAnimation = null;
     }
 
     const area = parseFloat(document.getElementById('area')?.value || 10);
     const pipeLength = AppState.calculationState.pipeLength;
-
     const bounds = boundaryLayer.getBounds();
     const center = bounds.getCenter();
 
     // Enhanced layout: Main pipe, sub-mains, and laterals
     const layoutComponents = [];
+    let mainPipe = null;
+    let mainStart = null;
+    let mainEnd = null;
 
     // Main pipe (thicker, vertical)
-    const mainStart = [center.lat - 0.0015, center.lng];
-    const mainEnd = [center.lat + 0.0015, center.lng];
-    const mainPipe = L.polyline([mainStart, mainEnd], {
+    mainStart = [center.lat - 0.0015, center.lng];
+    mainEnd = [center.lat + 0.0015, center.lng];
+    mainPipe = L.polyline([mainStart, mainEnd], {
         color: '#2d8659',
         weight: 6,
         opacity: 0.9
@@ -676,22 +978,94 @@ function generateLayout() {
     pipelineLayer = L.layerGroup(layoutComponents);
     pipelineLayer.addTo(map);
 
+    // TODO: Future enhancement - if layoutResult contains AI-generated nodes/edges,
+    // use those instead of heuristic grid:
+    // if (layoutResult.nodes && layoutResult.edges) {
+    //     // Draw AI-generated network
+    //     layoutResult.edges.forEach(edge => { ... });
+    // }
+
+    // Fit map to bounds
     const allBounds = L.latLngBounds(
         [...bounds.getSouthWest().toArray(), ...bounds.getNorthEast().toArray()]
     );
     map.fitBounds(allBounds, { padding: [50, 50] });
-
-    showNotification('Layout generated successfully!', 'success');
+    
+    // Start water flow animation on main pipe
+    if (mainPipe && mainStart && mainEnd) {
+        startWaterFlowAnimation(mainStart, mainEnd);
+    }
 }
 
-// AI Integration Hook - Currently returns heuristic, can be replaced with API call
-function callAiLayout() {
-    // Future: Replace with actual AI API call
-    // const response = await fetch('/api/generate-layout', { ... });
-    // return response.json();
+/**
+ * Start water flow animation on the main pipe to simulate water movement.
+ * Creates animated circle markers that move along the pipe from pump to end.
+ */
+function startWaterFlowAnimation(startLatLng, endLatLng) {
+    // Stop any existing animation
+    if (AppState.flowAnimation) {
+        clearInterval(AppState.flowAnimation.interval);
+        AppState.flowAnimation.markers.forEach(m => map.removeLayer(m));
+    }
     
-    // For now, use heuristic
-    return 'Heuristic (local)';
+    // Interpolate points along the pipe
+    const numPoints = 5;
+    const flowMarkers = [];
+    
+    // Create multiple flow markers
+    for (let i = 0; i < numPoints; i++) {
+        const progress = i / numPoints;
+        const lat = startLatLng[0] + (endLatLng[0] - startLatLng[0]) * progress;
+        const lng = startLatLng[1] + (endLatLng[1] - startLatLng[1]) * progress;
+        
+        const flowIcon = L.divIcon({
+            className: 'water-flow-marker',
+            html: '<div style="width: 12px; height: 12px; border-radius: 50%; background: #4a90e2; border: 2px solid white; box-shadow: 0 0 8px rgba(74, 144, 226, 0.8); animation: pulse 1.5s infinite;"></div>',
+            iconSize: [12, 12],
+            iconAnchor: [6, 6]
+        });
+        
+        const marker = L.marker([lat, lng], { icon: flowIcon }).addTo(map);
+        flowMarkers.push(marker);
+    }
+    
+    // Animate markers moving along the pipe
+    let progress = 0;
+    const speed = 0.02; // Speed of animation (0 to 1 per interval)
+    
+    const interval = setInterval(() => {
+        progress += speed;
+        if (progress > 1) progress = 0; // Loop animation
+        
+        flowMarkers.forEach((marker, i) => {
+            const markerProgress = (progress + i / numPoints) % 1;
+            const lat = startLatLng[0] + (endLatLng[0] - startLatLng[0]) * markerProgress;
+            const lng = startLatLng[1] + (endLatLng[1] - startLatLng[1]) * markerProgress;
+            marker.setLatLng([lat, lng]);
+        });
+    }, 50); // Update every 50ms
+    
+    AppState.flowAnimation = {
+        interval: interval,
+        markers: flowMarkers
+    };
+}
+
+// Add CSS for pulse animation (if not already in styles.css)
+if (!document.getElementById('water-flow-animation-style')) {
+    const style = document.createElement('style');
+    style.id = 'water-flow-animation-style';
+    style.textContent = `
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.3); opacity: 0.7; }
+        }
+        .water-flow-marker {
+            background: transparent !important;
+            border: none !important;
+        }
+    `;
+    document.head.appendChild(style);
 }
 
 // ============================================
@@ -882,6 +1256,16 @@ function finalizeDesign() {
                 </div>
                 <div>
                     <h3 style="color: var(--primary-green); margin-bottom: 1rem;">
+                        <i class="fas fa-satellite"></i> Satellite / Field Context
+                    </h3>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
+                        <div><strong>NDVI Mean:</strong> ${AppState.satelliteSummary?.ndviMean ? AppState.satelliteSummary.ndviMean.toFixed(3) : 'Not loaded'}</div>
+                        <div><strong>Slope Class:</strong> ${AppState.satelliteSummary?.slopeClass || 'Not loaded'}</div>
+                        <div><strong>Soil Type:</strong> ${AppState.satelliteSummary?.soilType || 'Not loaded'}</div>
+                    </div>
+                </div>
+                <div>
+                    <h3 style="color: var(--primary-green); margin-bottom: 1rem;">
                         <i class="fas fa-dollar-sign"></i> Estimated Cost
                     </h3>
                     <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary-green);">
@@ -987,13 +1371,29 @@ function runSeasonalSimulation() {
         });
     });
 
-    // Find peak month
+    // Find peak month for water demand
     const peakMonth = monthlyData.reduce((max, curr) => 
         curr.waterDemand > max.waterDemand ? curr : max
     );
 
-    // Update chart
+    // Find peak rainfall month
+    const peakRainfallMonth = monthlyData.reduce((max, curr) => 
+        curr.rainfall > max.rainfall ? curr : max
+    );
+
+    // Find peak ET₀ month
+    const peakETOMonth = monthlyData.reduce((max, curr) => 
+        curr.eto > max.eto ? curr : max
+    );
+
+    // Calculate averages
+    const avgDemand = monthlyData.reduce((sum, m) => sum + m.waterDemand, 0) / 12;
+    const avgRainfall = monthlyData.reduce((sum, m) => sum + m.rainfall, 0) / 12;
+    const avgETO = monthlyData.reduce((sum, m) => sum + m.eto, 0) / 12;
+
+    // Update charts
     updateSeasonalChart(monthlyData);
+    updateSeasonalETOChart(monthlyData);
 
     // Update summary
     const summaryContent = document.getElementById('seasonal-summary-content');
@@ -1001,17 +1401,24 @@ function runSeasonalSimulation() {
         summaryContent.innerHTML = `
             <div style="display: grid; gap: 1rem;">
                 <div>
-                    <strong>Peak Demand Month:</strong> ${peakMonth.month}
+                    <strong>Peak Water Demand Month:</strong> ${peakMonth.month}
                 </div>
                 <div>
                     <strong>Peak Demand:</strong> ${formatNumber(peakMonth.waterDemand)} L/day
                 </div>
                 <div>
-                    <strong>Average Monthly Demand:</strong> ${formatNumber(monthlyData.reduce((sum, m) => sum + m.waterDemand, 0) / 12)} L/day
+                    <strong>Average Monthly Demand:</strong> ${formatNumber(avgDemand)} L/day
+                </div>
+                <div>
+                    <strong>Highest Rainfall Month:</strong> ${peakRainfallMonth.month} (${formatNumber(peakRainfallMonth.rainfall)} mm/day)
+                </div>
+                <div>
+                    <strong>Highest ET₀ Month:</strong> ${peakETOMonth.month} (${formatNumber(peakETOMonth.eto, 1)} mm/day)
                 </div>
                 <div style="margin-top: 1rem; padding: 1rem; background: var(--grey-light); border-radius: var(--radius-sm);">
                     <strong>Design Recommendation:</strong><br>
-                    System should be sized for peak month demand (${peakMonth.month}: ${formatNumber(peakMonth.waterDemand)} L/day)
+                    System should be sized for peak month demand (${peakMonth.month}: ${formatNumber(peakMonth.waterDemand)} L/day). 
+                    Peak rainfall occurs in ${peakRainfallMonth.month}, while peak ET₀ is in ${peakETOMonth.month}.
                 </div>
             </div>
         `;
@@ -1056,6 +1463,81 @@ function updateSeasonalChart(monthlyData) {
                     title: {
                         display: true,
                         text: 'Water Demand (L/day)'
+                    }
+                }
+            }
+        }
+    });
+}
+
+function updateSeasonalETOChart(monthlyData) {
+    const ctx = document.getElementById('seasonal-eto-chart');
+    if (!ctx) return;
+
+    if (AppState.charts.seasonalETO) {
+        AppState.charts.seasonalETO.destroy();
+    }
+
+    AppState.charts.seasonalETO = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: monthlyData.map(d => d.month),
+            datasets: [
+                {
+                    label: 'ET₀ (mm/day)',
+                    data: monthlyData.map(d => d.eto),
+                    backgroundColor: 'rgba(74, 144, 226, 0.7)',
+                    borderColor: '#4a90e2',
+                    borderWidth: 1,
+                    yAxisID: 'y'
+                },
+                {
+                    label: 'Rainfall (mm/day)',
+                    data: monthlyData.map(d => d.rainfall),
+                    type: 'line',
+                    borderColor: '#2d8659',
+                    backgroundColor: 'rgba(45, 134, 89, 0.1)',
+                    tension: 0.4,
+                    fill: true,
+                    yAxisID: 'y1'
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            interaction: {
+                mode: 'index',
+                intersect: false,
+            },
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'top'
+                }
+            },
+            scales: {
+                y: {
+                    type: 'linear',
+                    display: true,
+                    position: 'left',
+                    beginAtZero: true,
+                    title: {
+                        display: true,
+                        text: 'ET₀ (mm/day)'
+                    }
+                },
+                y1: {
+                    type: 'linear',
+                    display: true,
+                    position: 'right',
+                    beginAtZero: true,
+                    title: {
+                        display: true,
+                        text: 'Rainfall (mm/day)'
+                    },
+                    grid: {
+                        drawOnChartArea: false
                     }
                 }
             }
@@ -1283,6 +1765,20 @@ function downloadReport() {
         y += 7;
         doc.text(`Validation: ${state.validationStatus === 'valid' ? 'OK' : 'Needs Adjustment'}`, 20, y);
 
+        // Satellite Data
+        if (AppState.satelliteSummary) {
+            y += 15;
+            doc.setFontSize(14);
+            doc.text('Satellite / Field Context', 20, y);
+            y += 10;
+            doc.setFontSize(10);
+            doc.text(`NDVI Mean: ${AppState.satelliteSummary.ndviMean ? AppState.satelliteSummary.ndviMean.toFixed(3) : 'N/A'}`, 20, y);
+            y += 7;
+            doc.text(`Slope Class: ${AppState.satelliteSummary.slopeClass || 'N/A'}`, 20, y);
+            y += 7;
+            doc.text(`Soil Type: ${AppState.satelliteSummary.soilType || 'N/A'}`, 20, y);
+        }
+
         // BOM
         y += 15;
         doc.setFontSize(14);
@@ -1306,6 +1802,32 @@ function downloadReport() {
         // Fallback: show data in alert or console
         console.log('Report Data:', { project, state });
         showNotification('PDF library not loaded. Check console for report data.', 'warning');
+    }
+}
+
+// ============================================
+// DESIGN JSON DISPLAY
+// ============================================
+
+/**
+ * Show design request and response JSON in a modal for developer demo/debugging.
+ */
+function showDesignJSON() {
+    const requestJson = buildDesignRequestFromUI();
+    const responseJson = buildDesignResponseFromState();
+    
+    const requestEl = document.getElementById('design-request-json');
+    const responseEl = document.getElementById('design-response-json');
+    const modal = document.getElementById('design-json-modal');
+    
+    if (requestEl && responseEl && modal) {
+        requestEl.textContent = JSON.stringify(requestJson, null, 2);
+        responseEl.textContent = JSON.stringify(responseJson, null, 2);
+        modal.classList.add('active');
+        
+        // Also log to console for easy copy-paste
+        console.log('Design Request:', requestJson);
+        console.log('Design Response:', responseJson);
     }
 }
 
