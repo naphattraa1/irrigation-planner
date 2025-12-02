@@ -110,7 +110,7 @@
                         </div>
                         <div class="input-group">
                             <label>
-                                <i class="fas fa-ruler-combined"></i> Area (ha)
+                                <i class="fas fa-ruler-combined"></i> Area (Rai)
                             </label>
                             <div class="slider-container">
                                 <input type="range" id="area" min="1" max="100" value="10" step="0.5" class="slider">
@@ -132,7 +132,7 @@
                         </div>
                         <div class="input-group">
                             <label>
-                                <i class="fas fa-sun"></i> ET₀ (mm/day)
+                                <i class="fas fa-sun"></i> ETo (mm/day)
                             </label>
                             <input type="number" id="eto" value="5.0" min="0" max="15" step="0.1" class="number-input">
                         </div>
@@ -141,6 +141,13 @@
                                 <i class="fas fa-cloud-rain"></i> Rainfall (mm/day)
                             </label>
                             <input type="number" id="rainfall" value="0" min="0" max="50" step="0.1" class="number-input">
+                        </div>
+                        <div class="input-group">
+                            <label>
+                                <i class="fas fa-tachometer-alt"></i> Irrigation Efficiency (%)
+                            </label>
+                            <input type="number" id="efficiency" value="80" min="50" max="100" step="1" class="number-input">
+                            <small class="helper-text">Typical system efficiency 70–85% depending on pipe condition and equipment</small>
                         </div>
                     </div>
 
@@ -167,7 +174,7 @@
                         </div>
                         <div class="input-group">
                             <label>
-                                <i class="fas fa-arrows-alt-h"></i> Max Lateral Length (m)
+                                <i class="fas fa-arrows-alt-h"></i> Maximum Lateral Length (m)
                             </label>
                             <select id="max-lateral" class="select-input">
                                 <option value="50">50 m</option>
@@ -177,6 +184,18 @@
                                 <option value="150">150 m</option>
                                 <option value="200">200 m</option>
                             </select>
+                        </div>
+                        <div class="input-group">
+                            <label>
+                                <i class="fas fa-clock"></i> Pump operating hours per day
+                            </label>
+                            <input type="number" id="hoursPerDay" value="8" min="1" max="24" step="1" class="number-input">
+                        </div>
+                        <div class="input-group">
+                            <label>
+                                <i class="fas fa-clock"></i> Irrigation hours per day
+                            </label>
+                            <input type="number" id="hoursPerDay" value="8" min="1" max="24" step="1" class="number-input">
                         </div>
                         <div class="input-group">
                             <label>
@@ -236,10 +255,10 @@
                         <i class="fas fa-project-diagram"></i> Generate Layout
                     </button>
                     <button class="btn-action" id="validate-hydraulics">
-                        <i class="fas fa-check-circle"></i> Validate
+                        <i class="fas fa-check-circle"></i> Validate Design
                     </button>
                     <button class="btn-action" id="show-bom">
-                        <i class="fas fa-list"></i> BOM
+                        <i class="fas fa-list"></i> Bill of Materials (BOM)
                     </button>
                     <button class="btn-action btn-primary" id="finalize-design">
                         <i class="fas fa-check-double"></i> Finalize Design
@@ -247,15 +266,15 @@
                 </div>
 
                 <!-- Map Container -->
-                <div class="map-wrapper">
-                    <h3 class="map-title">
-                        <i class="fas fa-map"></i> Interactive Layout Map
-                    </h3>
-                    <div style="font-size: 0.875rem; color: var(--text-medium); margin-bottom: 0.5rem;">
-                        <i class="fas fa-info-circle"></i> Blue moving dots represent simulated water flow
+                    <div class="map-wrapper">
+                        <h3 class="map-title">
+                            <i class="fas fa-map"></i> Interactive Layout Map
+                        </h3>
+                        <div style="font-size: 0.875rem; color: var(--text-medium); margin-bottom: 0.5rem;">
+                            <i class="fas fa-info-circle"></i> • Blue animated dots represent simulated water flow through the designed pipe network • Map data from OpenStreetMap
+                        </div>
+                        <div id="map-container" class="map-container"></div>
                     </div>
-                    <div id="map-container" class="map-container"></div>
-                </div>
 
                 <!-- Output Cards -->
                 <div class="outputs-grid">
@@ -264,9 +283,9 @@
                             <i class="fas fa-tint"></i>
                         </div>
                         <div class="output-content">
-                            <h3>Water Demand</h3>
+                            <h3>Water Demand (L/day)</h3>
                             <p class="output-value" id="water-demand">0</p>
-                            <p class="output-unit">L/day</p>
+                            <p class="output-unit">Value: 0 L/day (default)</p>
                         </div>
                     </div>
 
@@ -275,9 +294,9 @@
                             <i class="fas fa-ruler"></i>
                         </div>
                         <div class="output-content">
-                            <h3>Pipe Length</h3>
+                            <h3>Total Pipe Length (m)</h3>
                             <p class="output-value" id="pipe-length">0</p>
-                            <p class="output-unit">m</p>
+                            <p class="output-unit">Value: 0 m</p>
                         </div>
                     </div>
 
@@ -286,7 +305,7 @@
                             <i class="fas fa-chart-area"></i>
                         </div>
                         <div class="output-content">
-                            <h3>Head Loss</h3>
+                            <h3>Head Loss (%)</h3>
                             <p class="output-value" id="head-loss">0</p>
                             <p class="output-unit">%</p>
                         </div>
@@ -297,7 +316,7 @@
                             <i class="fas fa-arrows-alt-h"></i>
                         </div>
                         <div class="output-content">
-                            <h3>Max Lateral</h3>
+                            <h3>Maximum Lateral Length (m)</h3>
                             <p class="output-value" id="max-lateral-output">0</p>
                             <p class="output-unit">m</p>
                         </div>
@@ -318,7 +337,7 @@
                 <!-- BOM Table -->
                 <div class="bom-container" id="bom-container" style="display: none;">
                     <h3 class="bom-title">
-                        <i class="fas fa-list-alt"></i> Bill of Materials
+                        <i class="fas fa-list-alt"></i> Bill of Materials (BOM)
                     </h3>
                     <table class="bom-table" id="bom-table">
                         <thead>
@@ -389,9 +408,7 @@
                                         <th>Rainfall (mm/day)</th>
                                     </tr>
                                 </thead>
-                                <tbody id="monthly-data-tbody">
-                                    <!-- Will be populated by JavaScript -->
-                                </tbody>
+                                <tbody id="monthly-data-tbody"></tbody>
                             </table>
                         </div>
                     </div>
@@ -440,7 +457,7 @@
                             <i class="fas fa-tachometer-alt"></i>
                         </div>
                         <div class="kpi-content">
-                            <h3>Head Loss</h3>
+                            <h3>Head Loss (%)</h3>
                             <p class="kpi-value" id="kpi-headloss">0%</p>
                             <p class="kpi-target">Target: &lt;5%</p>
                             <div class="kpi-bar">
@@ -454,7 +471,7 @@
                             <i class="fas fa-ruler"></i>
                         </div>
                         <div class="kpi-content">
-                            <h3>Max Lateral</h3>
+                            <h3>Maximum Lateral Length (m)</h3>
                             <p class="kpi-value" id="kpi-lateral">0 m</p>
                             <p class="kpi-target">Constraint: 100 m</p>
                             <div class="kpi-bar">
@@ -468,8 +485,8 @@
                             <i class="fas fa-dollar-sign"></i>
                         </div>
                         <div class="kpi-content">
-                            <h3>Total Cost</h3>
-                            <p class="kpi-value" id="kpi-cost">$0</p>
+                            <h3>Total Cost (Baht)</h3>
+                            <p class="kpi-value" id="kpi-cost">฿0</p>
                             <p class="kpi-target" id="kpi-budget">Budget: Not set</p>
                         </div>
                     </div>
@@ -479,7 +496,7 @@
                             <i class="fas fa-pipe"></i>
                         </div>
                         <div class="kpi-content">
-                            <h3>Pipe Length</h3>
+                            <h3>Total Pipe Length (m)</h3>
                             <p class="kpi-value" id="kpi-pipelength">0 m</p>
                             <p class="kpi-target">Total System</p>
                         </div>
@@ -529,7 +546,7 @@
                     <input type="text" id="project-location-input" class="form-input" placeholder="e.g., Nakhon Ratchasima">
                 </div>
                 <div class="form-group">
-                    <label>Area (ha)</label>
+                    <label>Area (Rai)</label>
                     <input type="number" id="project-area-input" class="form-input" min="1" max="100" step="0.5" value="10">
                 </div>
                 <div class="form-group">

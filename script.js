@@ -1,1906 +1,1450 @@
-// ============================================
-// STATE & PERSISTENCE
-// ============================================
+// script.js
+// AI-Assisted Irrigation Planner (Thai units: Rai + Baht)
+// Uses FAO-56 + Hazen–Williams to keep numbers realistic
 
-const AppState = {
-    projects: [],
-    currentProjectId: null,
-    calculationState: {
-        waterDemand: 0,
-        pipeLength: 0,
-        headLoss: 0,
-        maxLateralLength: 0,
-        validationStatus: 'pending',
-        validationNotes: [],
-        bom: []
-    },
-    satelliteSummary: null,
-    layoutMode: 'heuristic', // 'heuristic' or 'ai'
-    charts: {
-        seasonal: null,
-        cost: null,
-        zone: null,
-        seasonalETO: null
-    },
-    flowAnimation: null // For water flow animation on map
+// -------------------------
+// GLOBAL CONSTANTS & HELPERS
+// -------------------------
+
+const RAI_PER_HA = 6.25;
+const DEFAULT_STAGE_DAYS = {
+  initial: 20,
+  development: 30,
+  mid: 40,
+  late: 30,
 };
 
-// Load projects from localStorage
-function loadProjects() {
-    const stored = localStorage.getItem('irrigation-projects');
-    if (stored) {
-        AppState.projects = JSON.parse(stored);
-    }
+function $(id) {
+  return document.getElementById(id);
 }
 
-// Save projects to localStorage
-function saveProjects() {
-    localStorage.setItem('irrigation-projects', JSON.stringify(AppState.projects));
+function openModal(id) {
+  const modal = $(id);
+  if (modal) modal.classList.add("active");
 }
 
-// Get current project
-function getCurrentProject() {
-    return AppState.projects.find(p => p.id === AppState.currentProjectId);
+function closeModal(id) {
+  const modal = $(id);
+  if (modal) modal.classList.remove("active");
 }
 
-// ============================================
-// SATELLITE PREPROCESSING (STUB)
-// ============================================
-// This module provides satellite/remote-sensing data preprocessing capabilities.
-// Currently returns mock data, but can be extended to call external APIs
-// (e.g., Google Earth Engine, Sentinel Hub, etc.) in the future.
-
-/**
- * Preprocess satellite data for a given farm boundary.
- * This is a stub function that simulates calling an external satellite API.
- * 
- * @param {Array} boundaryLatLngs - Array of Leaflet LatLng objects representing the farm boundary
- * @returns {Object} Satellite data summary with NDVI, slope, and soil type
- */
-function preprocessSatelliteData(boundaryLatLngs) {
-    // TODO: Replace with actual API call to external satellite data service
-    // Example: Google Earth Engine, Sentinel Hub, etc.
-    // const response = await fetch('/api/satellite-data', {
-    //     method: 'POST',
-    //     body: JSON.stringify({ boundary: boundaryLatLngs })
-    // });
-    // const data = await response.json();
-    
-    // Mock data generation based on boundary
-    // In a real implementation, this would be fetched from satellite imagery
-    const latLngs = boundaryLatLngs.map(ll => 
-        Array.isArray(ll) ? { lat: ll[0], lng: ll[1] } : ll
-    );
-    
-    // Calculate approximate area for mock data variation
-    const bounds = L.latLngBounds(latLngs);
-    const center = bounds.getCenter();
-    
-    // Mock NDVI (Normalized Difference Vegetation Index) - ranges from -1 to 1, typically 0 to 1 for vegetation
-    const ndviMean = 0.6 + (Math.random() * 0.3); // 0.6 to 0.9 (healthy vegetation)
-    
-    // Mock slope classification
-    const slopeOptions = ['Flat', 'Moderate', 'Steep'];
-    const slopeClass = slopeOptions[Math.floor(Math.random() * slopeOptions.length)];
-    
-    // Mock soil type
-    const soilTypes = ['Loam', 'Clay', 'Sandy Loam', 'Clay Loam', 'Silt Loam'];
-    const soilType = soilTypes[Math.floor(Math.random() * soilTypes.length)];
-    
-    const satelliteData = {
-        ndviMean: parseFloat(ndviMean.toFixed(3)),
-        slopeClass: slopeClass,
-        soilType: soilType,
-        timestamp: new Date().toISOString()
-    };
-    
-    // Store in AppState for use throughout the application
-    AppState.satelliteSummary = satelliteData;
-    
-    return satelliteData;
+function generateId() {
+  return "proj_" + Math.random().toString(36).substring(2, 9);
 }
 
-/**
- * Update the satellite data display in the UI.
- * 
- * @param {Object} satelliteData - Satellite data object from preprocessSatelliteData()
- */
-function updateSatelliteDisplay(satelliteData) {
-    const ndviEl = document.getElementById('satellite-ndvi');
-    const slopeEl = document.getElementById('satellite-slope');
-    const soilEl = document.getElementById('satellite-soil');
-    
-    if (ndviEl) {
-        ndviEl.textContent = satelliteData.ndviMean ? satelliteData.ndviMean.toFixed(3) : 'N/A';
-    }
-    
-    if (slopeEl) {
-        slopeEl.textContent = satelliteData.slopeClass || 'N/A';
-    }
-    
-    if (soilEl) {
-        soilEl.textContent = satelliteData.soilType || 'N/A';
-    }
+// Unit helpers
+function getAreaRaiFromInput() {
+  return parseFloat($("area")?.value || "10"); // slider/planner area
 }
 
-// ============================================
-// DESIGN REQUEST / RESPONSE SCHEMA
-// ============================================
-// These functions define the logical input/output structure of the irrigation design system.
-// They can be used to:
-// - Document the data flow in reports
-// - Prepare data for backend API calls
-// - Convert between UI state and structured design data
-
-/**
- * Build a design request object from current UI inputs.
- * This represents the input schema for the irrigation design system.
- * 
- * @returns {Object} Design request object containing all relevant inputs
- */
-function buildDesignRequestFromUI() {
-    const area = parseFloat(document.getElementById('area')?.value || 10);
-    const cropType = document.getElementById('crop-type')?.value || 'Sugarcane';
-    const kc = parseFloat(document.getElementById('kc')?.value || 0.9);
-    const eto = parseFloat(document.getElementById('eto')?.value || 5.0);
-    const rainfall = parseFloat(document.getElementById('rainfall')?.value || 0);
-    const mainDiameter = parseFloat(document.getElementById('main-diameter')?.value || 110);
-    const maxLateral = parseFloat(document.getElementById('max-lateral')?.value || 100);
-    const project = getCurrentProject();
-    
-    // Get boundary coordinates from map
-    let boundary = [];
-    if (boundaryLayer) {
-        const latLngs = boundaryLayer.getLatLngs()[0] || boundaryLayer.getLatLngs();
-        boundary = latLngs.map(ll => 
-            Array.isArray(ll) ? ll : [ll.lat, ll.lng]
-        );
-    }
-    
-    // Get scenario from seasonal simulation
-    const scenario = document.getElementById('scenario-preset')?.value || 'normal';
-    
-    return {
-        boundary: boundary,
-        general: {
-            area: area,
-            cropType: cropType,
-            location: project?.location || 'N/A',
-            province: project?.location || 'N/A'
-        },
-        waterModel: {
-            kc: kc,
-            eto: eto,
-            rainfall: rainfall
-        },
-        hydraulics: {
-            mainDiameter: mainDiameter,
-            maxLateral: maxLateral
-        },
-        designOptions: {
-            layoutSource: AppState.layoutMode === 'ai' ? 'AI (stub)' : 'Heuristic (local)',
-            scenario: scenario
-        },
-        timestamp: new Date().toISOString()
-    };
+function raiToHa(rai) {
+  return rai / RAI_PER_HA;
 }
 
-/**
- * Build a design response object from current calculation state.
- * This represents the output schema for the irrigation design system.
- * 
- * @returns {Object} Design response object containing all calculated results
- */
-function buildDesignResponseFromState() {
-    const state = AppState.calculationState;
-    const zones = calculateZones();
-    const bomTotal = state.bom.reduce((sum, item) => sum + item.total, 0);
-    const area = parseFloat(document.getElementById('area')?.value || 10);
-    const pipeLength = state.pipeLength;
-    const lengthPerZone = Math.ceil(pipeLength / zones);
-    
-    return {
-        waterDemandLday: state.waterDemand,
-        pipeLengthM: state.pipeLength,
-        headLossPercent: state.headLoss,
-        maxLateralLengthM: state.maxLateralLength,
-        zones: {
-            count: zones,
-            lengthPerZoneM: lengthPerZone,
-            details: Array.from({ length: zones }, (_, i) => ({
-                zoneId: i + 1,
-                lengthM: lengthPerZone
-            }))
-        },
-        validation: {
-            status: state.validationStatus,
-            notes: state.validationNotes
-        },
-        satelliteSummary: AppState.satelliteSummary || {
-            ndviMean: null,
-            slopeClass: null,
-            soilType: null
-        },
-        bom: state.bom.map(item => ({
-            item: item.item,
-            quantity: item.quantity,
-            unit: item.unit,
-            unitPrice: item.unitPrice,
-            total: item.total
-        })),
-        totalCost: bomTotal,
-        timestamp: new Date().toISOString()
-    };
-}
+// -------------------------
+// GLOBAL STATE
+// -------------------------
 
-// ============================================
-// INITIALIZATION
-// ============================================
+let projects = [];
+let currentProjectId = null;
 
-document.addEventListener('DOMContentLoaded', function() {
-    loadProjects();
-    initializeNavigation();
-    initializeMap();
-    setupEventListeners();
-    setupMonthlyTable();
-    syncSliderAndInput();
-    renderProjects();
-    calculateAll();
-    updateLayoutSource('Heuristic (local)');
-});
-
-// ============================================
-// NAVIGATION & UI
-// ============================================
-
-function initializeNavigation() {
-    // Sidebar navigation
-    document.querySelectorAll('.nav-item').forEach(item => {
-        item.addEventListener('click', function(e) {
-            e.preventDefault();
-            const section = this.dataset.section;
-            switchSection(section);
-        });
-    });
-
-    // Sidebar toggle (mobile)
-    const sidebarToggle = document.getElementById('sidebar-toggle');
-    if (sidebarToggle) {
-        sidebarToggle.addEventListener('click', function() {
-            document.getElementById('sidebar').classList.toggle('active');
-        });
-    }
-}
-
-function switchSection(sectionName) {
-    // Hide all sections
-    document.querySelectorAll('.content-section').forEach(section => {
-        section.classList.remove('active');
-    });
-
-    // Show selected section
-    const targetSection = document.getElementById(sectionName);
-    if (targetSection) {
-        targetSection.classList.add('active');
-    }
-
-    // Update nav items
-    document.querySelectorAll('.nav-item').forEach(item => {
-        item.classList.remove('active');
-        if (item.dataset.section === sectionName) {
-            item.classList.add('active');
-        }
-    });
-
-    // Initialize section-specific features
-    if (sectionName === 'summary') {
-        updateSummarySection();
-    } else if (sectionName === 'seasonal') {
-        // Seasonal section ready
-    }
-}
-
-function updateLayoutSource(source) {
-    const sourceElement = document.getElementById('layout-source');
-    if (sourceElement) {
-        sourceElement.textContent = `Layout: ${source}`;
-    }
-}
-
-// ============================================
-// PROJECT MANAGEMENT
-// ============================================
-
-function renderProjects() {
-    const grid = document.getElementById('projects-grid');
-    const emptyState = document.getElementById('empty-state');
-
-    if (!grid) return;
-
-    if (AppState.projects.length === 0) {
-        grid.style.display = 'none';
-        if (emptyState) emptyState.style.display = 'block';
-        return;
-    }
-
-    grid.style.display = 'grid';
-    if (emptyState) emptyState.style.display = 'none';
-
-    grid.innerHTML = AppState.projects.map(project => `
-        <div class="project-card" data-project-id="${project.id}">
-            <div class="project-card-badge ${project.latestMetrics?.validationOk ? 'valid' : 'invalid'}">
-                ${project.latestMetrics?.validationOk ? 'OK' : 'Needs Adjustment'}
-            </div>
-            <div class="project-card-header">
-                <div>
-                    <div class="project-card-title">${project.name}</div>
-                    <div class="project-card-location">
-                        <i class="fas fa-map-marker-alt"></i> ${project.location}
-                    </div>
-                </div>
-                <div class="project-card-actions">
-                    <button class="project-card-action" onclick="editProject('${project.id}')" title="Edit">
-                        <i class="fas fa-edit"></i>
-                    </button>
-                    <button class="project-card-action" onclick="deleteProject('${project.id}')" title="Delete">
-                        <i class="fas fa-trash"></i>
-                    </button>
-                </div>
-            </div>
-            <div class="project-card-metrics">
-                <div class="project-metric">
-                    <div class="project-metric-label">Area</div>
-                    <div class="project-metric-value">${project.area} ha</div>
-                </div>
-                <div class="project-metric">
-                    <div class="project-metric-label">Crop</div>
-                    <div class="project-metric-value">${project.crop}</div>
-                </div>
-                <div class="project-metric">
-                    <div class="project-metric-label">Demand</div>
-                    <div class="project-metric-value">${formatNumber(project.latestMetrics?.demandLday || 0)} L/day</div>
-                </div>
-                <div class="project-metric">
-                    <div class="project-metric-label">Updated</div>
-                    <div class="project-metric-value">${formatDate(project.lastUpdated)}</div>
-                </div>
-            </div>
-        </div>
-    `).join('');
-
-    // Add click listeners
-    grid.querySelectorAll('.project-card').forEach(card => {
-        card.addEventListener('click', function(e) {
-            if (!e.target.closest('.project-card-actions')) {
-                const projectId = this.dataset.projectId;
-                loadProject(projectId);
-            }
-        });
-    });
-}
-
-function createProject() {
-    const name = document.getElementById('project-name-input').value.trim();
-    const location = document.getElementById('project-location-input').value.trim();
-    const area = parseFloat(document.getElementById('project-area-input').value);
-    const crop = document.getElementById('project-crop-input').value;
-
-    if (!name || !location || !area) {
-        showNotification('Please fill in all required fields', 'warning');
-        return;
-    }
-
-    const project = {
-        id: Date.now().toString(),
-        name,
-        location,
-        area,
-        crop,
-        lastUpdated: new Date().toISOString(),
-        latestMetrics: {
-            demandLday: 0,
-            totalPipeLength: 0,
-            headLossPct: 0,
-            maxLateral: 0,
-            validationOk: false
-        }
-    };
-
-    AppState.projects.push(project);
-    saveProjects();
-    renderProjects();
-    closeModal('new-project-modal');
-    loadProject(project.id);
-    showNotification('Project created successfully!', 'success');
-}
-
-function loadProject(projectId) {
-    const project = AppState.projects.find(p => p.id === projectId);
-    if (!project) return;
-
-    AppState.currentProjectId = projectId;
-
-    // Load project data into planner inputs
-    document.getElementById('crop-type').value = project.crop;
-    document.getElementById('area').value = project.area;
-    document.getElementById('area-value').value = project.area;
-    document.getElementById('kc').value = project.latestMetrics?.kc || 0.9;
-    document.getElementById('eto').value = project.latestMetrics?.eto || 5.0;
-    document.getElementById('rainfall').value = project.latestMetrics?.rainfall || 0;
-    document.getElementById('main-diameter').value = project.latestMetrics?.mainDiameter || 110;
-    document.getElementById('max-lateral').value = project.latestMetrics?.maxLateral || 100;
-
-    // Update current project badge
-    const badge = document.getElementById('current-project-badge');
-    const badgeName = document.getElementById('current-project-name');
-    if (badge && badgeName) {
-        badge.style.display = 'inline-flex';
-        badgeName.textContent = project.name;
-    }
-
-    // Switch to planner section
-    switchSection('planner');
-    calculateAll();
-    showNotification(`Loaded project: ${project.name}`, 'success');
-}
-
-function deleteProject(projectId) {
-    if (!confirm('Are you sure you want to delete this project?')) return;
-
-    AppState.projects = AppState.projects.filter(p => p.id !== projectId);
-    if (AppState.currentProjectId === projectId) {
-        AppState.currentProjectId = null;
-    }
-    saveProjects();
-    renderProjects();
-    showNotification('Project deleted', 'success');
-}
-
-function editProject(projectId) {
-    const project = AppState.projects.find(p => p.id === projectId);
-    if (!project) return;
-
-    // For now, just load the project (can add edit modal later)
-    loadProject(projectId);
-}
-
-// ============================================
-// EVENT LISTENERS
-// ============================================
-
-function setupEventListeners() {
-    // New project button
-    const newProjectBtn = document.getElementById('new-project-btn');
-    if (newProjectBtn) {
-        newProjectBtn.addEventListener('click', function() {
-            document.getElementById('new-project-modal').classList.add('active');
-        });
-    }
-
-    // Save project button
-    const saveProjectBtn = document.getElementById('save-project-btn');
-    if (saveProjectBtn) {
-        saveProjectBtn.addEventListener('click', createProject);
-    }
-
-    // Input synchronization
-    const areaSlider = document.getElementById('area');
-    const areaValue = document.getElementById('area-value');
-
-    if (areaSlider && areaValue) {
-        areaSlider.addEventListener('input', function() {
-            areaValue.value = this.value;
-            calculateAll();
-        });
-
-        areaValue.addEventListener('input', function() {
-            const val = Math.max(1, Math.min(100, parseFloat(this.value) || 1));
-            areaSlider.value = val;
-            this.value = val;
-            calculateAll();
-        });
-    }
-
-    // All input changes trigger recalculation
-    ['kc', 'eto', 'rainfall', 'main-diameter', 'max-lateral', 'crop-type'].forEach(id => {
-        const element = document.getElementById(id);
-        if (element) {
-            element.addEventListener('change', calculateAll);
-            element.addEventListener('input', calculateAll);
-        }
-    });
-
-    // Layout mode selector
-    const layoutModeSelect = document.getElementById('layout-mode');
-    if (layoutModeSelect) {
-        layoutModeSelect.addEventListener('change', function() {
-            AppState.layoutMode = this.value;
-        });
-    }
-
-    // Satellite data refresh button
-    const refreshSatelliteBtn = document.getElementById('refresh-satellite');
-    if (refreshSatelliteBtn) {
-        refreshSatelliteBtn.addEventListener('click', function() {
-            if (!boundaryLayer) {
-                showNotification('Please generate a layout first to define the boundary', 'warning');
-                return;
-            }
-            
-            const latLngs = boundaryLayer.getLatLngs()[0] || boundaryLayer.getLatLngs();
-            const satelliteData = preprocessSatelliteData(latLngs);
-            updateSatelliteDisplay(satelliteData);
-            showNotification('Satellite data refreshed!', 'success');
-        });
-    }
-
-    // Action buttons
-    const calculateBtn = document.getElementById('calculate-demand');
-    if (calculateBtn) calculateBtn.addEventListener('click', calculateAll);
-
-    const generateBtn = document.getElementById('generate-layout');
-    if (generateBtn) generateBtn.addEventListener('click', generateLayout);
-
-    const validateBtn = document.getElementById('validate-hydraulics');
-    if (validateBtn) validateBtn.addEventListener('click', validateHydraulics);
-
-    const bomBtn = document.getElementById('show-bom');
-    if (bomBtn) bomBtn.addEventListener('click', showBOM);
-
-    const finalizeBtn = document.getElementById('finalize-design');
-    if (finalizeBtn) finalizeBtn.addEventListener('click', finalizeDesign);
-
-    // Seasonal simulation
-    const runSeasonalBtn = document.getElementById('run-seasonal-sim');
-    if (runSeasonalBtn) runSeasonalBtn.addEventListener('click', runSeasonalSimulation);
-
-    const scenarioPreset = document.getElementById('scenario-preset');
-    if (scenarioPreset) {
-        scenarioPreset.addEventListener('change', function() {
-            loadScenarioPreset(this.value);
-        });
-    }
-
-    // Download report
-    const downloadBtn = document.getElementById('download-report-btn');
-    if (downloadBtn) downloadBtn.addEventListener('click', downloadReport);
-
-    // Show Design JSON button
-    const showDesignJsonBtn = document.getElementById('show-design-json-btn');
-    if (showDesignJsonBtn) {
-        showDesignJsonBtn.addEventListener('click', showDesignJSON);
-    }
-
-    // Modal close handlers
-    document.querySelectorAll('.modal').forEach(modal => {
-        modal.addEventListener('click', function(e) {
-            if (e.target === this) {
-                closeModal(this.id);
-            }
-        });
-    });
-}
-
-function syncSliderAndInput() {
-    const areaSlider = document.getElementById('area');
-    const areaValue = document.getElementById('area-value');
-    if (areaSlider && areaValue) {
-        areaValue.value = areaSlider.value;
-    }
-}
-
-// ============================================
-// CALCULATION FUNCTIONS
-// ============================================
-
-// Water model & rules (FAO-56 style)
-// ETc = Kc * ET0, net irrigation = max(0, ETc - effectiveRainfall)
-function calculateWaterDemand() {
-    const area = parseFloat(document.getElementById('area')?.value || 10);
-    const kc = parseFloat(document.getElementById('kc')?.value || 0.9);
-    const eto = parseFloat(document.getElementById('eto')?.value || 5.0);
-    const rainfall = parseFloat(document.getElementById('rainfall')?.value || 0);
-
-    const etc = kc * eto;
-    const netIrrigation = Math.max(0, etc - rainfall);
-    const waterDemand = netIrrigation * area * 10000;
-
-    return waterDemand;
-}
-
-function calculatePipeLength() {
-    const area = parseFloat(document.getElementById('area')?.value || 10);
-    const areaM2 = area * 10000;
-    const sideLength = Math.sqrt(areaM2);
-    const estimatedLength = sideLength * 2 * 1.2;
-
-    return Math.round(estimatedLength);
-}
-
-// Hydraulic validation using Hazen–Williams equation
-function calculateHeadLoss() {
-    const waterDemand = calculateWaterDemand();
-    const flowRate = waterDemand / (24 * 3600);
-    const flowRateM3s = flowRate / 1000;
-
-    const diameter = parseFloat(document.getElementById('main-diameter')?.value || 110) / 1000;
-    const length = calculatePipeLength();
-    const C = 150;
-
-    const hf = 10.67 * Math.pow(flowRateM3s, 1.852) * length / (Math.pow(C, 1.852) * Math.pow(diameter, 4.871));
-
-    const operatingHead = 30;
-    const headLossPercent = (hf / operatingHead) * 100;
-
-    return Math.max(0, Math.min(100, headLossPercent));
-}
-
-function calculateMaxLateralLength() {
-    const diameter = parseFloat(document.getElementById('main-diameter')?.value || 110);
-    const maxLateral = parseFloat(document.getElementById('max-lateral')?.value || 100);
-
-    const waterDemand = calculateWaterDemand();
-    const flowPerLateral = waterDemand / 10;
-    const flowRate = flowPerLateral / (24 * 3600 * 1000);
-
-    const diameterM = diameter / 1000;
-    const C = 150;
-
-    const maxHeadLoss = 0.05 * 30;
-    const maxLength = (maxHeadLoss * Math.pow(C, 1.852) * Math.pow(diameterM, 4.871)) /
-                      (10.67 * Math.pow(flowRate, 1.852));
-
-    return Math.min(maxLateral, Math.max(50, maxLength));
-}
-
-function calculateZones() {
-    const area = parseFloat(document.getElementById('area')?.value || 10);
-    const waterDemand = calculateWaterDemand();
-    const maxZoneCapacity = 50000;
-    const zones = Math.ceil(waterDemand / maxZoneCapacity);
-
-    return Math.max(1, zones);
-}
-
-// Bill of Materials estimation based on pipe length, fittings, valves, emitters, pump, controller
-function calculateBOM() {
-    const area = parseFloat(document.getElementById('area')?.value || 10);
-    const diameter = parseFloat(document.getElementById('main-diameter')?.value || 110);
-    const pipeLength = calculatePipeLength();
-    const zones = calculateZones();
-    const waterDemand = calculateWaterDemand();
-
-    const prices = {
-        pipe: { 50: 2.5, 63: 3.0, 75: 3.5, 90: 4.0, 110: 5.0, 125: 6.0, 140: 7.0, 160: 8.0 },
-        fittings: 15,
-        valves: 25,
-        emitters: 0.5,
-        pump: 500,
-        controller: 200
-    };
-
-    const bom = [];
-
-    const pipePrice = prices.pipe[diameter] || 5.0;
-    bom.push({
-        item: `Main Pipe (${diameter}mm)`,
-        quantity: Math.ceil(pipeLength),
-        unit: 'm',
-        unitPrice: pipePrice,
-        total: Math.ceil(pipeLength) * pipePrice
-    });
-
-    const lateralLength = Math.ceil(pipeLength * 0.5);
-    bom.push({
-        item: 'Lateral Pipes (16mm)',
-        quantity: lateralLength,
-        unit: 'm',
-        unitPrice: 1.5,
-        total: lateralLength * 1.5
-    });
-
-    const numFittings = Math.ceil(pipeLength / 20);
-    bom.push({
-        item: 'Pipe Fittings',
-        quantity: numFittings,
-        unit: 'pcs',
-        unitPrice: prices.fittings,
-        total: numFittings * prices.fittings
-    });
-
-    bom.push({
-        item: 'Control Valves',
-        quantity: zones,
-        unit: 'pcs',
-        unitPrice: prices.valves,
-        total: zones * prices.valves
-    });
-
-    const numEmitters = Math.ceil(area * 10000);
-    bom.push({
-        item: 'Drip Emitters',
-        quantity: numEmitters,
-        unit: 'pcs',
-        unitPrice: prices.emitters,
-        total: numEmitters * prices.emitters
-    });
-
-    bom.push({
-        item: 'Irrigation Pump',
-        quantity: 1,
-        unit: 'pcs',
-        unitPrice: prices.pump,
-        total: prices.pump
-    });
-
-    bom.push({
-        item: 'Irrigation Controller',
-        quantity: 1,
-        unit: 'pcs',
-        unitPrice: prices.controller,
-        total: prices.controller
-    });
-
-    return bom;
-}
-
-function calculateAll() {
-    AppState.calculationState.waterDemand = calculateWaterDemand();
-    AppState.calculationState.pipeLength = calculatePipeLength();
-    AppState.calculationState.headLoss = calculateHeadLoss();
-    AppState.calculationState.maxLateralLength = calculateMaxLateralLength();
-    AppState.calculationState.bom = calculateBOM();
-
-    updateOutputs();
-}
-
-function updateOutputs() {
-    const state = AppState.calculationState;
-
-    const waterDemandEl = document.getElementById('water-demand');
-    if (waterDemandEl) waterDemandEl.textContent = formatNumber(state.waterDemand);
-
-    const pipeLengthEl = document.getElementById('pipe-length');
-    if (pipeLengthEl) pipeLengthEl.textContent = formatNumber(state.pipeLength);
-
-    const headLossEl = document.getElementById('head-loss');
-    if (headLossEl) headLossEl.textContent = formatNumber(state.headLoss, 2) + '%';
-
-    const maxLateralEl = document.getElementById('max-lateral-output');
-    if (maxLateralEl) maxLateralEl.textContent = formatNumber(state.maxLateralLength);
-}
-
-// ============================================
-// MAP & LAYOUT GENERATION
-// ============================================
-
-let map = null;
+let map;
 let mapInitialized = false;
-let pipelineLayer = null;
-let boundaryLayer = null;
+let layoutLayerGroup;
+let flowAnimationInterval = null;
+let lastPlannerDesign = null;
+
+let seasonalChart = null;
+let seasonalEtoChart = null;
+let costChart = null;
+let zoneChart = null;
+
+// -------------------------
+// SIDEBAR NAV
+// -------------------------
+
+function initSidebar() {
+  const sidebar = $("sidebar");
+  const toggle = $("sidebar-toggle");
+  const navItems = document.querySelectorAll(".nav-item");
+  const sections = document.querySelectorAll(".content-section");
+
+  if (toggle) {
+    toggle.addEventListener("click", () => {
+      sidebar.classList.toggle("active");
+    });
+  }
+
+  navItems.forEach((item) => {
+    item.addEventListener("click", (e) => {
+      e.preventDefault();
+      const target = item.getAttribute("data-section");
+      if (!target) return;
+
+      navItems.forEach((n) => n.classList.remove("active"));
+      item.classList.add("active");
+
+      sections.forEach((sec) => {
+        sec.classList.toggle("active", sec.id === target);
+      });
+
+      if (target === "planner") {
+        initializeMap();
+      }
+    });
+  });
+}
+
+// -------------------------
+// PROJECT DASHBOARD
+// -------------------------
+
+function renderProjectsGrid() {
+  const grid = $("projects-grid");
+  const emptyState = $("empty-state");
+
+  grid.innerHTML = "";
+
+  if (!projects.length) {
+    emptyState.style.display = "block";
+    return;
+  }
+
+  emptyState.style.display = "none";
+
+  projects.forEach((proj) => {
+    const card = document.createElement("div");
+    card.className = "project-card";
+    card.dataset.id = proj.id;
+
+    const statusClass = proj.validation?.valid ? "valid" : "invalid";
+    const statusText = proj.validation?.valid ? "Valid" : "Not Valid";
+
+    card.innerHTML = `
+      <div class="project-card-header">
+        <div>
+          <div class="project-card-title">${proj.name}</div>
+          <div class="project-card-location">
+            <i class="fas fa-map-marker-alt"></i>
+            <span>${proj.location || "Location not set"}</span>
+          </div>
+        </div>
+        <div class="project-card-actions">
+          <button class="project-card-action" data-action="edit">
+            <i class="fas fa-pen"></i>
+          </button>
+          <button class="project-card-action" data-action="delete">
+            <i class="fas fa-trash"></i>
+          </button>
+        </div>
+      </div>
+      <span class="project-card-badge ${statusClass}">${statusText}</span>
+      <div class="project-card-metrics">
+        <div class="project-metric">
+          <span class="project-metric-label">Area</span>
+          <span class="project-metric-value">${proj.areaRai || "-"} Rai</span>
+        </div>
+        <div class="project-metric">
+          <span class="project-metric-label">Water Demand</span>
+          <span class="project-metric-value">${proj.metrics?.waterDemand || "-"} L/day</span>
+        </div>
+        <div class="project-metric">
+          <span class="project-metric-label">Pipe Length</span>
+          <span class="project-metric-value">${proj.metrics?.pipeLength || "-"} m</span>
+        </div>
+        <div class="project-metric">
+          <span class="project-metric-label">Head Loss</span>
+          <span class="project-metric-value">${proj.metrics?.headLoss || "-"} %</span>
+        </div>
+      </div>
+    `;
+
+    // select card
+    card.addEventListener("click", (e) => {
+      if (e.target.closest(".project-card-action")) return;
+      setCurrentProject(proj.id);
+    });
+
+    // edit / delete buttons
+    card.querySelectorAll(".project-card-action").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const action = btn.dataset.action;
+        if (action === "delete") {
+          projects = projects.filter((p) => p.id !== proj.id);
+          if (currentProjectId === proj.id) {
+            currentProjectId = null;
+            updateCurrentProjectBadge(null);
+          }
+          renderProjectsGrid();
+        } else if (action === "edit") {
+          loadProjectToModal(proj);
+        }
+      });
+    });
+
+    grid.appendChild(card);
+  });
+}
+
+function loadProjectToModal(project) {
+  $("project-name-input").value = project.name;
+  $("project-location-input").value = project.location || "";
+  $("project-area-input").value = project.areaRai || 10;
+  $("project-crop-input").value = project.cropType || "Sugarcane";
+
+  const saveBtn = $("save-project-btn");
+  saveBtn.textContent = "Save Changes";
+
+  const defaultHandler = saveProjectFromModal;
+  const editHandler = () => {
+    project.name = $("project-name-input").value || "Untitled Project";
+    project.location = $("project-location-input").value || "";
+    project.areaRai = parseFloat($("project-area-input").value) || 10;
+    project.cropType = $("project-crop-input").value || "Sugarcane";
+
+    closeModal("new-project-modal");
+    saveBtn.removeEventListener("click", editHandler);
+    saveBtn.addEventListener("click", defaultHandler);
+    saveBtn.textContent = "Create Project";
+
+    renderProjectsGrid();
+    setCurrentProject(project.id);
+  };
+
+  saveBtn.removeEventListener("click", defaultHandler);
+  saveBtn.addEventListener("click", editHandler);
+
+  openModal("new-project-modal");
+}
+
+function saveProjectFromModal() {
+  const name = $("project-name-input").value.trim() || "Untitled Project";
+  const location = $("project-location-input").value.trim();
+  const areaRai = parseFloat($("project-area-input").value) || 10;
+  const cropType = $("project-crop-input").value || "Sugarcane";
+
+  const newProject = {
+    id: generateId(),
+    name,
+    location,
+    areaRai,
+    cropType,
+    metrics: {},
+    validation: {
+      valid: false,
+      notes: "Not validated yet",
+    },
+  };
+
+  projects.push(newProject);
+  closeModal("new-project-modal");
+  renderProjectsGrid();
+  setCurrentProject(newProject.id);
+}
+
+function setCurrentProject(projectId) {
+  currentProjectId = projectId;
+  const project = projects.find((p) => p.id === projectId);
+  updateSummaryFromProject(project);
+
+  if (!project) return;
+
+  $("crop-type").value = project.cropType || "Sugarcane";
+  $("area").value = project.areaRai || 10;
+  $("area-value").value = project.areaRai || 10;
+
+  if (project.metrics) {
+    $("water-demand").textContent = project.metrics.waterDemand || 0;
+    $("pipe-length").textContent = project.metrics.pipeLength || 0;
+    $("head-loss").textContent = project.metrics.headLoss || 0;
+    $("max-lateral-output").textContent = project.metrics.maxLateral || 0;
+  }
+
+  if (project.validation) {
+    applyValidationCard(project.validation.valid, project.validation.notes || "");
+  }
+}
+
+function updateCurrentProjectBadge(project) {
+  const badge = $("current-project-badge");
+  const nameSpan = $("current-project-name");
+  const summaryCard = $("project-summary-content");
+
+  if (!project) {
+    badge.style.display = "none";
+    nameSpan.textContent = "No project selected";
+    summaryCard.innerHTML =
+      "<p>No project selected. Go to Dashboard to select or create a project.</p>";
+    return;
+  }
+
+  badge.style.display = "inline-flex";
+  nameSpan.textContent = project.name;
+
+  summaryCard.innerHTML = `
+    <p><strong>Project:</strong> ${project.name}</p>
+    <p><strong>Location:</strong> ${project.location || "Not set"}</p>
+    <p><strong>Area:</strong> ${project.areaRai || "-"} Rai</p>
+    <p><strong>Crop Type:</strong> ${project.cropType || "-"}</p>
+    <p><strong>Water Demand:</strong> ${project.metrics?.waterDemand || "-"} L/day</p>
+    <p><strong>Pipe Length:</strong> ${project.metrics?.pipeLength || "-"} m</p>
+    <p><strong>Head Loss:</strong> ${project.metrics?.headLoss || "-"} %</p>
+    <p><strong>Total Cost:</strong> ${
+      project.metrics?.totalCost ? `฿${project.metrics.totalCost}` : "-"
+    }</p>
+  `;
+}
+
+// -------------------------
+// PLANNER INPUTS & CORE CALCULATION
+// -------------------------
+
+function getPlannerInputs() {
+  const cropType = $("crop-type").value;
+  const areaRai = getAreaRaiFromInput();
+  const kc = parseFloat($("kc").value || "0.9"); // fallback single Kc
+  const kcInitial = parseFloat($("kc-initial")?.value || $("kc")?.value || "0.3");
+  const kcDevelopment = parseFloat($("kc-development")?.value || "0.7");
+  const kcMid = parseFloat($("kc-mid")?.value || "1.0");
+  const kcLate = parseFloat($("kc-late")?.value || "0.7");
+  const eto = parseFloat($("eto").value || "5");
+  const rainfall = parseFloat($("rainfall").value || "0");
+  const efficiency = parseFloat($("efficiency")?.value || "80");
+  const mainDiameter = parseInt($("main-diameter").value || "110", 10);
+  const maxLateral = parseInt($("max-lateral").value || "100", 10);
+  const hoursPerDay = parseFloat($("hoursPerDay")?.value || "8");
+  const spacingX = parseFloat($("spacingX")?.value || "12"); // m spacing between sprinklers (row)
+  const spacingY = parseFloat($("spacingY")?.value || "12"); // m spacing between laterals
+  const layoutMode = $("layout-mode").value;
+
+  return {
+    cropType,
+    areaRai,
+    kc,
+    kcInitial,
+    kcDevelopment,
+    kcMid,
+    kcLate,
+    eto,
+    rainfall,
+    efficiency,
+    mainDiameter,
+    maxLateral,
+    hoursPerDay,
+    spacingX,
+    spacingY,
+    layoutMode,
+  };
+}
+
+// Weighted seasonal Kc using four stages (default durations mirror FAO tables)
+function computeSeasonalKc(inputs) {
+  const stageDays = DEFAULT_STAGE_DAYS;
+  const totalDays = stageDays.initial + stageDays.development + stageDays.mid + stageDays.late;
+  const weightedKc =
+    (inputs.kcInitial * stageDays.initial +
+      inputs.kcDevelopment * stageDays.development +
+      inputs.kcMid * stageDays.mid +
+      inputs.kcLate * stageDays.late) /
+    totalDays;
+  return weightedKc || inputs.kc || 1.0;
+}
+
+// FAO56/USDA-SCS effective rainfall (mm/day equivalent; using daily input directly)
+function calculateEffectiveRainFAO56(rainfallMm) {
+  const P = Math.max(0, rainfallMm);
+  let Pe = 0;
+  if (P <= 250) {
+    Pe = (P * (125 - 0.2 * P)) / 125;
+  } else {
+    Pe = 125 + 0.1 * P;
+  }
+  return Math.max(0, Pe);
+}
+
+// Layout estimation for main + laterals from area and spacing
+function calculateLayoutLengths(areaM2, spacingY, layoutMode) {
+  const fieldSide = Math.sqrt(Math.max(1, areaM2)); // assume square
+  const lateralSpacing = Math.max(0.5, spacingY || 12);
+  const lateralCount = Math.max(1, Math.ceil(fieldSide / lateralSpacing));
+  const baseLateralLength = fieldSide * lateralCount;
+  const baseMainLength = fieldSide;
+
+  // Simple layout-mode tweak: AI assumed 10% more efficient, heuristic adds 5% allowance
+  const factor = layoutMode === "ai" ? 0.9 : 1.05;
+  const mainLength = baseMainLength * factor;
+  const lateralLength = baseLateralLength * factor;
+
+  return {
+    fieldSide,
+    lateralCount,
+    avgLateralLength: fieldSide,
+    mainLength: Math.max(10, Math.round(mainLength)),
+    lateralLength: Math.max(10, Math.round(lateralLength)),
+    totalPipeLength: Math.max(20, Math.round(mainLength + lateralLength)),
+  };
+}
+
+// Hazen–Williams hydraulic helper (returns head-loss %, velocity, total head)
+function calculateHydraulics(flowM3s, totalPipeLength, mainDiameterMm, lateralLength, operatingHead = 30) {
+  const diameterM = (mainDiameterMm || 110) / 1000; // m
+  const length = Math.max(1, totalPipeLength || 100); // m
+  const C = 150; // smooth PVC
+
+  const hf =
+    (10.67 * Math.pow(flowM3s, 1.852) * length) /
+    (Math.pow(C, 1.852) * Math.pow(diameterM, 4.871)); // m
+
+  const headLossPercent = (hf / operatingHead) * 100;
+  const lateralHeadLossPercent =
+    ((hf * (lateralLength || length) / length) / operatingHead) * 100;
+  const area = Math.PI * Math.pow(diameterM, 2) * 0.25;
+  const velocity = area > 0 ? flowM3s / area : 0;
+
+  return {
+    hf,
+    headLossPercent: Math.max(0, Math.min(100, +headLossPercent.toFixed(2))),
+    lateralHeadLossPercent: Math.max(0, Math.min(100, +lateralHeadLossPercent.toFixed(2))),
+    velocity: +velocity.toFixed(3),
+    withinLimit: headLossPercent <= 5 && lateralHeadLossPercent <= 5,
+    totalHead: operatingHead + hf,
+  };
+}
+
+function calculatePumpPowerHP(flowLps, totalHead, pumpEfficiency = 0.65) {
+  // pumpPower = (Q (L/s) × head (m)) / (eff × 75)
+  const hp = (flowLps * totalHead) / (pumpEfficiency * 75);
+  return {
+    hp: +hp.toFixed(2),
+    kw: +((hp || 0) * 0.746).toFixed(2),
+  };
+}
+
+// ✅ FAO-56 style water demand (input Rai → m²) with multi-stage Kc and effective rainfall
+function calculateWaterDemandLperDay(inputs) {
+  const areaRai = parseFloat(inputs.areaRai) || 0;
+  const areaM2 = areaRai * 1600; // 1 Rai = 1,600 m²
+  const seasonalKc = computeSeasonalKc(inputs);
+  const etc = inputs.eto * seasonalKc; // mm/day
+  const effectiveRain = calculateEffectiveRainFAO56(inputs.rainfall); // mm/day
+  const netIrrigation = Math.max(0, etc - effectiveRain); // NIR (mm/day)
+  const efficiency = Math.max(0.01, (parseFloat(inputs.efficiency) || 80) / 100);
+  const appliedDepth = netIrrigation / efficiency; // GIR (mm/day applied)
+
+  // 1 mm over 1 m² = 1 liter
+  const waterDemand = appliedDepth * areaM2; // L/day
+
+  // Example check for 10 Rai:
+  // areaRai = 10, Kc = 0.3, ETo = 5, rainfall = 0
+  // ETc = 1.5 mm/day → netIrrigation = 1.5
+  // With efficiency = 80% (0.8):
+  // appliedDepth = 1.5 / 0.8 = 1.875 mm/day
+  // areaM2 = 10 * 1600 = 16,000 m²
+  // waterDemand = 1.875 * 16,000 = 30,000 L/day
+  return {
+    areaM2,
+    seasonalKc,
+    etc,
+    effectiveRain,
+    netIrrigation,
+    efficiency,
+    appliedDepth,
+    waterDemandLday: waterDemand,
+  };
+}
+
+// ✅ Pipe length (approx.) – now based on spacing/layout and area
+function calculatePipeLengthFromArea(inputs) {
+  const areaM2 = (parseFloat(inputs.areaRai) || 0) * 1600;
+  const layout = calculateLayoutLengths(areaM2, inputs.spacingY, inputs.layoutMode);
+  return layout.totalPipeLength;
+}
+
+// ✅ Wrapper to keep legacy signature, but uses new hydraulic model
+function calculateHeadLossPercent(waterDemandLday, pipeLength, mainDiameterMm, hoursPerDayOverride, lateralLengthOverride) {
+  const hoursPerDay = parseFloat(
+    hoursPerDayOverride ?? $("hoursPerDay")?.value ?? "24"
+  );
+  const secondsPerDay = Math.max(1, hoursPerDay) * 3600;
+  const flowRateLps = waterDemandLday / secondsPerDay; // L/s based on operation hours
+  const hydraulics = calculateHydraulics(
+    flowRateLps / 1000,
+    pipeLength,
+    mainDiameterMm,
+    lateralLengthOverride || pipeLength * 0.6
+  );
+  return hydraulics.headLossPercent;
+}
+
+// ✅ Max lateral length (friction limit ~5%) using Hazen–Williams on an assumed lateral share of total flow
+function calculateMaxLateralLengthFromDemand(waterDemandLday, mainDiameterMm, userMaxLateral) {
+  const diameter = parseFloat(mainDiameterMm || 110);
+  const maxLateralSetting = parseFloat(userMaxLateral || 100);
+  const hoursPerDay = parseFloat($("hoursPerDay")?.value || "24");
+
+  const flowTotalLps = waterDemandLday / (Math.max(1, hoursPerDay) * 3600);
+  const flowPerLateralLps = flowTotalLps / 10; // assume 10 laterals
+  const flowRate = flowPerLateralLps / 1000; // m³/s
+
+  const diameterM = diameter / 1000;
+  const C = 150;
+  const maxHeadLoss = 0.05 * 30; // 5% of 30 m
+
+  const maxLength =
+    (maxHeadLoss * Math.pow(C, 1.852) * Math.pow(diameterM, 4.871)) /
+    (10.67 * Math.pow(flowRate, 1.852));
+
+  return Math.min(maxLateralSetting, Math.max(20, +maxLength.toFixed(1)));
+}
+
+// Full design pipeline for Planner page
+function buildDesignFromInputs(inputs) {
+  const demand = calculateWaterDemandLperDay(inputs);
+  const secondsPerDay = Math.max(1, inputs.hoursPerDay || 24) * 3600;
+  const flowLps = demand.waterDemandLday / secondsPerDay;
+  const flowM3s = flowLps / 1000;
+
+  const spacingX = Math.max(0.5, inputs.spacingX || 12);
+  const spacingY = Math.max(0.5, inputs.spacingY || 12);
+  const sprinklerCount = Math.max(1, Math.ceil(demand.areaM2 / (spacingX * spacingY)));
+
+  const layout = calculateLayoutLengths(demand.areaM2, spacingY, inputs.layoutMode);
+  const hydraulics = calculateHydraulics(
+    flowM3s,
+    layout.totalPipeLength,
+    inputs.mainDiameter,
+    layout.lateralLength
+  );
+
+  const pumpPower = calculatePumpPowerHP(flowLps, hydraulics.totalHead);
+  const valves = Math.max(1, Math.ceil(sprinklerCount / 100));
+
+  return {
+    ...demand,
+    flowLps,
+    flowM3s,
+    spacingX,
+    spacingY,
+    sprinklerCount,
+    valves,
+    ...layout,
+    headLossPercent: hydraulics.headLossPercent,
+    lateralHeadLossPercent: hydraulics.lateralHeadLossPercent,
+    velocity: hydraulics.velocity,
+    totalHead: hydraulics.totalHead,
+    hydraulics,
+    pumpPowerHp: pumpPower.hp,
+    pumpPowerKw: pumpPower.kw,
+  };
+}
+
+function initPlannerInputs() {
+  const areaRange = $("area");
+  const areaValue = $("area-value");
+
+  areaRange.addEventListener("input", () => {
+    areaValue.value = areaRange.value;
+  });
+
+  areaValue.addEventListener("input", () => {
+    let v = parseFloat(areaValue.value) || 1;
+    if (v < 1) v = 1;
+    if (v > 100) v = 100;
+    areaValue.value = v;
+    areaRange.value = v;
+  });
+
+  $("refresh-satellite").addEventListener("click", fillFakeSatelliteData);
+  $("calculate-demand").addEventListener("click", onRecalculate);
+  $("generate-layout").addEventListener("click", onGenerateLayout);
+  $("validate-hydraulics").addEventListener("click", onValidateHydraulics);
+  $("show-bom").addEventListener("click", onShowBOM);
+  $("finalize-design").addEventListener("click", onFinalizeDesign);
+
+  // Trigger recalculation when key planner fields change (including new efficiency/hours inputs)
+  [
+    "crop-type",
+    "area",
+    "area-value",
+    "kc",
+    "kc-initial",
+    "kc-development",
+    "kc-mid",
+    "kc-late",
+    "eto",
+    "rainfall",
+    "efficiency",
+    "main-diameter",
+    "max-lateral",
+    "hoursPerDay",
+    "spacingX",
+    "spacingY",
+    "layout-mode",
+  ].forEach((id) => {
+    const el = $(id);
+    if (el) el.addEventListener("input", onRecalculate);
+  });
+}
+
+function fillFakeSatelliteData() {
+  const ndvi = (0.3 + Math.random() * 0.5).toFixed(2);
+  const slopeOptions = ["Flat", "Gentle", "Moderate", "Steep"];
+  const soilOptions = ["Sandy loam", "Loam", "Clay loam", "Clay"];
+
+  $("satellite-ndvi").textContent = `${ndvi} (healthy vegetation)`;
+  $("satellite-slope").textContent = slopeOptions[Math.floor(Math.random() * slopeOptions.length)];
+  $("satellite-soil").textContent = soilOptions[Math.floor(Math.random() * soilOptions.length)];
+}
+
+// Core planner recalculation (FAO + Hazen–Williams)
+function onRecalculate() {
+  const inputs = getPlannerInputs();
+
+  const design = buildDesignFromInputs(inputs);
+  lastPlannerDesign = design;
+
+  $("water-demand").textContent = Math.round(design.waterDemandLday);
+  $("pipe-length").textContent = design.totalPipeLength;
+  $("head-loss").textContent = design.headLossPercent;
+  $("max-lateral-output").textContent = design.avgLateralLength.toFixed(1);
+
+  updateKPIFromPlanner(
+    design.waterDemandLday,
+    design.totalPipeLength,
+    design.headLossPercent,
+    design.avgLateralLength
+  );
+
+  updateSummaryFromDesign(design, inputs);
+
+  if (currentProjectId) {
+    const proj = projects.find((p) => p.id === currentProjectId);
+    if (proj) {
+      proj.areaRai = inputs.areaRai;
+      proj.cropType = inputs.cropType;
+      proj.metrics = {
+        waterDemand: Math.round(design.waterDemandLday),
+        pipeLength: design.totalPipeLength,
+        headLoss: design.headLossPercent,
+        maxLateral: design.avgLateralLength,
+      };
+      renderProjectsGrid();
+      updateSummaryFromProject(proj);
+    }
+  }
+}
+
+// -------------------------
+// HYDRAULIC VALIDATION & KPI CARDS
+// -------------------------
+
+function applyValidationCard(valid, notes) {
+  const card = $("validation-card");
+  const icon = $("validation-icon");
+  const status = $("validation-status");
+  const notesEl = $("validation-notes");
+
+  card.classList.remove("valid", "invalid");
+
+  if (valid) {
+    card.classList.add("valid");
+    icon.className = "fas fa-check-circle";
+    status.textContent = "Valid";
+  } else {
+    card.classList.add("invalid");
+    icon.className = "fas fa-exclamation-triangle";
+    status.textContent = "Check Design";
+  }
+  notesEl.textContent = notes || "";
+}
+
+// Functional KPI #2: Hydraulic Validation Compliance (head-loss ≤ 5%)
+function onValidateHydraulics() {
+  const design = lastPlannerDesign || buildDesignFromInputs(getPlannerInputs());
+  const headLoss = design.headLossPercent || 0;
+  const lateralLoss = design.lateralHeadLossPercent || 0;
+
+  const valid = headLoss <= 5 && lateralLoss <= 5; // target head-loss ≤5% for main and laterals
+  const notes = valid
+    ? "Head loss ≤ 5% and lateral length within limit."
+    : "Head loss or lateral pipe length exceeds the allowable limit. Consider increasing the main pipe diameter or dividing the field into more zones to reduce lateral length.";
+
+  applyValidationCard(valid, notes);
+
+  if (currentProjectId) {
+    const proj = projects.find((p) => p.id === currentProjectId);
+    if (proj) {
+      proj.validation = { valid, notes };
+      renderProjectsGrid();
+    }
+  }
+}
+
+// KPI Cards (Functional KPIs)
+function updateKPIFromPlanner(waterDemand, pipeLength, headLoss, maxLateralLength) {
+  const head = isFinite(headLoss) ? headLoss : 0;
+  const lateral = isFinite(maxLateralLength) ? maxLateralLength : 0;
+  const pipe = isFinite(pipeLength) ? pipeLength : 0;
+
+  $("kpi-headloss").textContent = head.toFixed(2) + "%";
+  $("kpi-lateral").textContent = lateral.toFixed(1) + " m";
+  $("kpi-pipelength").textContent = pipe + " m";
+
+  const headLossPercentForBar = Math.min(100, (head / 10) * 100);
+  const lateralPercent = Math.min(100, (lateral / 100) * 100);
+
+  $("kpi-headloss-bar").style.width = headLossPercentForBar + "%";
+  $("kpi-lateral-bar").style.width = lateralPercent + "%";
+}
+
+function buildCostItems(design, inputs) {
+  const mainPipeLen = design.mainLength || 0;
+  const lateralPipeLen = design.lateralLength || 0;
+  const sprinklers = design.sprinklerCount || 0;
+  const valves = Math.max(1, design.valves || Math.round((inputs?.areaRai || 0) / 4) || 1);
+  const pumpHp = design.pumpPowerHp || 0;
+
+  return [
+    { name: `Main pipe Ø${inputs?.mainDiameter || 75} mm`, qty: mainPipeLen, unit: "m", unitPrice: 120 },
+    { name: "Lateral pipe Ø32 mm", qty: lateralPipeLen, unit: "m", unitPrice: 70 },
+    { name: "Sprinkler heads", qty: sprinklers, unit: "pcs", unitPrice: 85 },
+    { name: "Control valves", qty: valves, unit: "pcs", unitPrice: 550 },
+    { name: "Filter set", qty: 1, unit: "set", unitPrice: 9500 },
+    { name: `Pump (approx ${pumpHp} hp)`, qty: 1, unit: "set", unitPrice: 45000 },
+  ];
+}
+
+function updateSummaryFromDesign(design, inputs) {
+  if (!design) return;
+  const mainInputs = inputs || getPlannerInputs();
+
+  updateKPIFromPlanner(
+    design.waterDemandLday || 0,
+    design.totalPipeLength || 0,
+    design.headLossPercent || 0,
+    design.avgLateralLength || 0
+  );
+
+  const items = buildCostItems(design, mainInputs);
+  const totalCost = items.reduce((sum, it) => sum + it.qty * it.unitPrice, 0);
+  $("kpi-cost").textContent = "฿" + totalCost.toLocaleString();
+
+  updateCostCharts(items, totalCost, design.totalPipeLength || 0);
+}
+
+// -------------------------
+// BOM (COST IN THAI BAHT)
+// -------------------------
+
+function onShowBOM() {
+  const inputs = getPlannerInputs();
+  const design = lastPlannerDesign || buildDesignFromInputs(inputs);
+  const pipeLength = design.totalPipeLength;
+
+  const tbody = $("bom-tbody");
+  tbody.innerHTML = "";
+
+  const items = buildCostItems(design, inputs);
+
+  let totalCost = 0;
+
+  items.forEach((it) => {
+    const row = document.createElement("tr");
+    const total = it.qty * it.unitPrice;
+    totalCost += total;
+
+    row.innerHTML = `
+      <td>${it.name}</td>
+      <td>${it.qty}</td>
+      <td>${it.unit}</td>
+      <td>${it.unitPrice.toLocaleString()} Baht</td>
+      <td>${total.toLocaleString()} Baht</td>
+    `;
+    tbody.appendChild(row);
+  });
+
+  const totalRow = document.createElement("tr");
+  totalRow.innerHTML = `
+    <td colspan="4" style="text-align:right;">Grand Total</td>
+    <td>${totalCost.toLocaleString()} Baht</td>
+  `;
+  tbody.appendChild(totalRow);
+
+  $("bom-container").style.display = "block";
+
+  $("kpi-cost").textContent = "฿" + totalCost.toLocaleString();
+
+  if (currentProjectId) {
+    const proj = projects.find((p) => p.id === currentProjectId);
+    if (proj) {
+      proj.metrics = proj.metrics || {};
+      proj.metrics.totalCost = totalCost.toFixed(0);
+      renderProjectsGrid();
+      updateSummaryFromProject(proj);
+    }
+  }
+
+  updateCostCharts(items, totalCost, design.totalPipeLength || 0);
+}
+
+// -------------------------
+// SEASONAL SIMULATION (KPIs #3 & #7)
+// -------------------------
+
+const MONTH_NAMES = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+const MONTH_IDS = [
+  "jan",
+  "feb",
+  "mar",
+  "apr",
+  "may",
+  "jun",
+  "jul",
+  "aug",
+  "sep",
+  "oct",
+  "nov",
+  "dec",
+];
+
+// Build the monthly table (12 rows, no hard-coded HTML rows)
+function setupMonthlyTable() {
+  const tbody = document.getElementById("monthly-data-tbody");
+  if (!tbody) return;
+  tbody.innerHTML = "";
+
+  for (let i = 0; i < 12; i++) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${MONTH_NAMES[i]}</td>
+      <td><input type="number" step="0.1" value="5.0" class="number-input monthly-eto" data-month="${i}"></td>
+      <td><input type="number" step="0.1" value="2.0" class="number-input monthly-rainfall" data-month="${i}"></td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+function loadScenarioPreset(mode) {
+  let tbody = document.getElementById("monthly-data-tbody");
+  if (!tbody) {
+    setupMonthlyTable();
+    tbody = document.getElementById("monthly-data-tbody");
+  }
+  if (!tbody) return;
+
+  const presets = {
+    normal: {
+      eto: [4.5, 4.6, 4.8, 5.0, 5.2, 5.1, 5.0, 4.9, 4.7, 4.6, 4.5, 4.4],
+      rain: [2.5, 2.0, 2.0, 1.8, 1.5, 1.2, 1.0, 1.0, 2.2, 3.0, 3.5, 3.8],
+    },
+    dry: {
+      eto: [4.8, 4.9, 5.2, 5.4, 5.6, 5.5, 5.4, 5.3, 5.0, 4.9, 4.8, 4.7],
+      rain: [1.5, 1.2, 1.0, 0.8, 0.6, 0.5, 0.5, 0.6, 1.0, 1.5, 1.8, 2.0],
+    },
+    wet: {
+      eto: [4.2, 4.3, 4.5, 4.7, 4.9, 4.8, 4.7, 4.6, 4.4, 4.3, 4.2, 4.1],
+      rain: [3.5, 3.2, 3.0, 2.8, 2.5, 2.4, 2.3, 2.2, 3.0, 4.0, 4.5, 4.8],
+    },
+  };
+
+  const preset = presets[mode] || presets.normal;
+
+  const etoInputs = tbody.querySelectorAll(".monthly-eto");
+  const rainInputs = tbody.querySelectorAll(".monthly-rainfall");
+  etoInputs.forEach((input, idx) => {
+    input.value = preset.eto[idx].toFixed(1);
+  });
+  rainInputs.forEach((input, idx) => {
+    input.value = preset.rain[idx].toFixed(1);
+  });
+}
+
+// Seasonal simulation using Thai units (Rai) and liters/month
+function runSeasonalSimulation() {
+  const areaRai = parseFloat($("area")?.value || "0");
+  const areaM2 = areaRai * 1600; // 1 Rai = 1,600 m²
+
+  const kcInitial = parseFloat($("kc-initial").value || "0.3");
+  const kcMid = parseFloat($("kc-mid").value || "1.0");
+  const kcLate = parseFloat($("kc-late").value || "0.7");
+
+  const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  const tbody = document.getElementById("monthly-data-tbody");
+  const etoInputs = tbody ? tbody.querySelectorAll(".monthly-eto") : [];
+  const rainInputs = tbody ? tbody.querySelectorAll(".monthly-rainfall") : [];
+
+  if (!etoInputs.length || !rainInputs.length) return;
+
+  const monthlyDemand = [];
+  const monthlyEto = [];
+  const monthlyRain = [];
+
+  etoInputs.forEach((etoInput, idx) => {
+    const eto = parseFloat(etoInput.value || "0");
+    const rainfall = parseFloat(rainInputs[idx]?.value || "0");
+    monthlyEto.push(eto);
+    monthlyRain.push(rainfall);
+
+    // Stage mapping: Jan–Feb Initial, Mar–Aug Mid, Sep–Dec Late
+    let kc;
+    if (idx <= 1) kc = kcInitial;
+    else if (idx >= 2 && idx <= 7) kc = kcMid;
+    else kc = kcLate;
+
+    const etc = kc * eto; // mm/day
+    const netIrrigation = Math.max(0, etc - rainfall); // mm/day
+    const monthlyDepth = netIrrigation * daysInMonth[idx]; // mm/month
+    const monthDemand = monthlyDepth * areaM2; // L/month (1 mm over 1 m² = 1 L)
+    monthlyDemand.push(Math.round(monthDemand));
+  });
+
+  drawSeasonalCharts(monthlyDemand, monthlyEto, monthlyRain);
+  updateSeasonalSummary(monthlyDemand, monthlyEto, monthlyRain);
+}
+
+function drawSeasonalCharts(monthlyDemand, monthlyEto, monthlyRain) {
+  if (typeof Chart === "undefined") return;
+  const ctx1 = $("seasonal-chart")?.getContext("2d");
+  const ctx2 = $("seasonal-eto-chart")?.getContext("2d");
+
+  if (!ctx1 || !ctx2) return;
+
+  if (seasonalChart) seasonalChart.destroy();
+  seasonalChart = new Chart(ctx1, {
+    type: "line",
+    data: {
+      labels: MONTH_NAMES,
+      datasets: [
+        {
+          label: "Water demand (L/month)",
+          data: monthlyDemand,
+          borderColor: "#3b82f6",
+          backgroundColor: "rgba(59,130,246,0.15)",
+          fill: true,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: { y: { beginAtZero: true } },
+    },
+  });
+
+  if (seasonalEtoChart) seasonalEtoChart.destroy();
+  seasonalEtoChart = new Chart(ctx2, {
+    type: "bar",
+    data: {
+      labels: MONTH_NAMES,
+      datasets: [
+        {
+          label: "ETo (mm/day)",
+          data: monthlyEto,
+          backgroundColor: "rgba(14,165,233,0.7)",
+        },
+        {
+          label: "Rainfall (mm/day)",
+          data: monthlyRain,
+          backgroundColor: "rgba(34,197,94,0.7)",
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: { y: { beginAtZero: true } },
+    },
+  });
+}
+
+function updateSeasonalSummary(monthlyDemand, monthlyEto, monthlyRain) {
+  const totalDemand = monthlyDemand.reduce((a, b) => a + b, 0);
+  if (!monthlyDemand.length) return;
+  const maxDemand = Math.max(...monthlyDemand);
+  const maxMonthIndex = monthlyDemand.indexOf(maxDemand);
+  const avgEto =
+    monthlyEto.length ? monthlyEto.reduce((a, b) => a + b, 0) / monthlyEto.length : 0;
+
+  $("seasonal-summary-content").innerHTML = `
+    <p><strong>Total seasonal demand:</strong> ${totalDemand.toLocaleString()} L</p>
+    <p><strong>Peak month:</strong> ${MONTH_NAMES[maxMonthIndex]} (${maxDemand.toLocaleString()} L)</p>
+    <p><strong>Average ET₀:</strong> ${avgEto.toFixed(1)} mm/day</p>
+    <p>Units match Planner: area in Rai (1 Rai = 1,600 m²) and water in liters/month.</p>
+  `;
+}
+
+// -------------------------
+// COST & ZONE CHARTS
+// -------------------------
+
+function updateCostCharts(items, totalCost, totalPipeLengthOverride) {
+  const costCtx = $("cost-chart")?.getContext("2d");
+  const zoneCtx = $("zone-chart")?.getContext("2d");
+
+  if (!costCtx || !zoneCtx) return;
+
+  if (costChart) costChart.destroy();
+  if (zoneChart) zoneChart.destroy();
+
+  const labels = items.map((it) => it.name);
+  const values = items.map((it) => it.qty * it.unitPrice);
+
+  costChart = new Chart(costCtx, {
+    type: "pie",
+    data: {
+      labels,
+      datasets: [
+        {
+          data: values,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+    },
+  });
+
+  const pipeLength = totalPipeLengthOverride ?? parseFloat($("pipe-length").textContent || "0");
+  const zoneLabels = ["Zone A", "Zone B", "Zone C"];
+  const zoneValues = [
+    +(pipeLength * 0.4).toFixed(1),
+    +(pipeLength * 0.35).toFixed(1),
+    +(pipeLength * 0.25).toFixed(1),
+  ];
+
+  zoneChart = new Chart(zoneCtx, {
+    type: "bar",
+    data: {
+      labels: zoneLabels,
+      datasets: [
+        {
+          label: "Pipe length (m)",
+          data: zoneValues,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+    },
+  });
+}
+
+// -------------------------
+// MAP (LEAFLET) – FIXED TO THAILAND FIELD BOUNDARY
+// -------------------------
+
+function clearLayoutAnimation() {
+  if (flowAnimationInterval) {
+    clearInterval(flowAnimationInterval);
+    flowAnimationInterval = null;
+  }
+}
 
 function initializeMap() {
-    if (mapInitialized) return;
+  if (mapInitialized) return;
+  const container = $("map-container");
+  if (!container) return;
 
-    const mapContainer = document.getElementById('map-container');
-    if (!mapContainer) return;
+  map = L.map("map-container").setView([13.7563, 100.5018], 15); // Bangkok area
 
-    map = L.map('map-container').setView([13.7563, 100.5018], 15);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: "© OpenStreetMap contributors",
+  }).addTo(map);
 
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap contributors',
-        maxZoom: 19
-    }).addTo(map);
+  layoutLayerGroup = L.layerGroup().addTo(map);
 
-    const satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-        attribution: '© Esri',
-        maxZoom: 19
+  // default rectangular field boundary
+  const defaultBoundary = [
+    [13.7550, 100.5000],
+    [13.7575, 100.5000],
+    [13.7575, 100.5035],
+    [13.7550, 100.5035],
+    [13.7550, 100.5000],
+  ];
+
+  const boundary = L.polygon(defaultBoundary, {
+    color: "#999",
+    weight: 1,
+    fillColor: "#e0f3e8",
+    fillOpacity: 0.2,
+  }).addTo(layoutLayerGroup);
+
+  map.fitBounds(boundary.getBounds(), { padding: [40, 40] });
+
+  mapInitialized = true;
+}
+
+function onGenerateLayout() {
+  const inputs = getPlannerInputs();
+  generateLayoutOnMap(inputs);
+}
+
+function generateLayoutOnMap(inputs) {
+  if (!map || !layoutLayerGroup) return;
+
+  clearLayoutAnimation();
+  layoutLayerGroup.clearLayers();
+
+  // draw boundary
+  const defaultBoundary = [
+    [13.7550, 100.5000],
+    [13.7575, 100.5000],
+    [13.7575, 100.5035],
+    [13.7550, 100.5035],
+    [13.7550, 100.5000],
+  ];
+  const boundaryLayer = L.polygon(defaultBoundary, {
+    color: "#999",
+    weight: 1,
+    fillColor: "#e0f3e8",
+    fillOpacity: 0.2,
+  }).addTo(layoutLayerGroup);
+
+  const bounds = boundaryLayer.getBounds();
+  const center = bounds.getCenter();
+
+  const pipeLength = calculatePipeLengthFromArea(inputs);
+  const mainSpan = (pipeLength / 1000) * 0.003; // scale length on map
+
+  // main pipe (north-south)
+  const mainStart = [center.lat - mainSpan, center.lng];
+  const mainEnd = [center.lat + mainSpan, center.lng];
+
+  const mainPipe = L.polyline([mainStart, mainEnd], {
+    color: "#2d8659",
+    weight: 6,
+    opacity: 0.9,
+  }).addTo(layoutLayerGroup);
+
+  const numLaterals = Math.min(10, Math.max(4, Math.round(inputs.areaRai / 5)));
+  const latSpacing =
+    (bounds.getNorth() - bounds.getSouth()) / (numLaterals + 1);
+
+  const flowDots = [];
+
+  for (let i = 1; i <= numLaterals; i++) {
+    const y = bounds.getSouth() + latSpacing * i;
+    const lateral = L.polyline(
+      [
+        [y, bounds.getWest()],
+        [y, bounds.getEast()],
+      ],
+      {
+        color: "#4a90e2",
+        weight: 3,
+        opacity: 0.9,
+      }
+    ).addTo(layoutLayerGroup);
+
+    const dot = L.circleMarker([y, bounds.getWest()], {
+      radius: 4,
+      color: "#007bff",
+      fillColor: "#007bff",
+      fillOpacity: 1,
+    }).addTo(layoutLayerGroup);
+
+    flowDots.push({
+      dot,
+      y,
+      xStart: bounds.getWest(),
+      xEnd: bounds.getEast(),
+      t: 0,
     });
+  }
 
-    const baseMaps = {
-        "Street Map": L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '© OpenStreetMap contributors',
-            maxZoom: 19
-        }),
-        "Satellite": satelliteLayer
-    };
-
-    L.control.layers(baseMaps).addTo(map);
-
-    const defaultBoundary = [
-        [13.7550, 100.5000],
-        [13.7575, 100.5000],
-        [13.7575, 100.5035],
-        [13.7550, 100.5035],
-        [13.7550, 100.5000]
-    ];
-
-    boundaryLayer = L.polygon(defaultBoundary, {
-        color: '#2d8659',
-        fillColor: '#2d8659',
-        fillOpacity: 0.2,
-        weight: 2
-    }).addTo(map);
-
-    mapInitialized = true;
-}
-
-// Heuristic network generation (MST/Steiner-like grid layout)
-async function generateLayout() {
-    if (!mapInitialized) {
-        initializeMap();
-    }
-
-    // Build layout input from UI
-    const layoutInput = buildDesignRequestFromUI();
-    
-    // Call AI layout hook (currently returns stub, can be replaced with AI API call)
-    const result = await callAiLayout(layoutInput);
-    updateLayoutSource(result.source);
-    
-    // Draw layout on map
-    drawLayoutOnMap(result);
-    
-    showNotification('Layout generated successfully!', 'success');
-}
-
-/**
- * AI Layout Integration Hook
- * This function can be extended to call an actual AI backend service.
- * For now, it returns a stub result based on the selected layout mode.
- * 
- * @param {Object} layoutInput - Design request object from buildDesignRequestFromUI()
- * @returns {Promise<Object>} Layout result with source, layoutType, and geometry data
- */
-async function callAiLayout(layoutInput) {
-    // Determine layout mode
-    const mode = AppState.layoutMode || 'heuristic';
-    
-    if (mode === 'ai') {
-        // TODO: Replace with actual AI API call
-        // Example:
-        // const response = await fetch('/api/ai-generate-layout', {
-        //     method: 'POST',
-        //     headers: { 'Content-Type': 'application/json' },
-        //     body: JSON.stringify(layoutInput)
-        // });
-        // const aiResult = await response.json();
-        // return {
-        //     source: 'AI (stub)',
-        //     layoutType: aiResult.layoutType,
-        //     nodes: aiResult.nodes,
-        //     edges: aiResult.edges,
-        //     note: 'AI-generated layout'
-        // };
-        
-        // Stub AI response
-        return {
-            source: 'AI (stub)',
-            layoutType: 'grid',
-            note: 'AI stub - would generate optimized layout here'
-        };
-    } else {
-        // Heuristic mode (current implementation)
-        return {
-            source: 'Heuristic (local)',
-            layoutType: 'grid',
-            note: 'Heuristic grid layout generated locally'
-        };
-    }
-}
-
-/**
- * Draw layout on map based on layout result.
- * This function handles the actual drawing of pipes, nodes, and markers on the Leaflet map.
- * Currently uses heuristic drawing, but can be extended to use AI-generated node/edge data.
- * 
- * @param {Object} layoutResult - Result from callAiLayout()
- */
-function drawLayoutOnMap(layoutResult) {
-    // Clear existing layout
-    if (pipelineLayer) {
-        map.removeLayer(pipelineLayer);
-        pipelineLayer = null;
-    }
-    
-    // Stop any existing flow animation
-    if (AppState.flowAnimation) {
-        clearInterval(AppState.flowAnimation.interval);
-        AppState.flowAnimation.markers.forEach(m => map.removeLayer(m));
-        AppState.flowAnimation = null;
-    }
-
-    const area = parseFloat(document.getElementById('area')?.value || 10);
-    const pipeLength = AppState.calculationState.pipeLength;
-    const bounds = boundaryLayer.getBounds();
-    const center = bounds.getCenter();
-
-    // Enhanced layout: Main pipe, sub-mains, and laterals
-    const layoutComponents = [];
-    let mainPipe = null;
-    let mainStart = null;
-    let mainEnd = null;
-
-    // Main pipe (thicker, vertical)
-    mainStart = [center.lat - 0.0015, center.lng];
-    mainEnd = [center.lat + 0.0015, center.lng];
-    mainPipe = L.polyline([mainStart, mainEnd], {
-        color: '#2d8659',
-        weight: 6,
-        opacity: 0.9
+  flowAnimationInterval = setInterval(() => {
+    flowDots.forEach((d) => {
+      d.t += 0.02;
+      if (d.t > 1) d.t = 0;
+      const x = d.xStart + (d.xEnd - d.xStart) * d.t;
+      d.dot.setLatLng([d.y, x]);
     });
-    layoutComponents.push(mainPipe);
+  }, 80);
 
-    // Add pump icon at start
-    const pumpIcon = L.divIcon({
-        className: 'pump-icon',
-        html: '<i class="fas fa-water" style="color: #2d8659; font-size: 20px;"></i>',
-        iconSize: [20, 20]
+  map.fitBounds(bounds, { padding: [40, 40] });
+}
+
+// -------------------------
+// DESIGN JSON & REPORT (Thai units)
+// -------------------------
+
+function buildDesignJSON() {
+  const inputs = getPlannerInputs();
+  const proj = currentProjectId
+    ? projects.find((p) => p.id === currentProjectId)
+    : null;
+
+  const metrics = proj?.metrics || {};
+
+  return {
+    project: {
+      id: proj?.id || null,
+      name: proj?.name || "Unsaved design",
+      location: proj?.location || "",
+      areaRai: inputs.areaRai,
+      cropType: inputs.cropType,
+    },
+    hydraulic: {
+      mainDiameter: inputs.mainDiameter,
+      maxLateral: inputs.maxLateral,
+      layoutMode: inputs.layoutMode,
+    },
+    climate: {
+      eto: inputs.eto,
+      rainfall: inputs.rainfall,
+      kc: inputs.kc,
+    },
+    outputs: {
+      waterDemand: metrics.waterDemand || $("water-demand").textContent,
+      pipeLength: metrics.pipeLength || $("pipe-length").textContent,
+      headLoss: metrics.headLoss || $("head-loss").textContent,
+      totalCost:
+        metrics.totalCost ||
+        $("kpi-cost").textContent.replace(/[฿,]/g, ""),
+      validationStatus: $("validation-status").textContent,
+      validationNotes: $("validation-notes").textContent,
+    },
+  };
+}
+
+function buildDesignResponseJSON() {
+  const design = buildDesignJSON();
+  const recs = [];
+
+  const headLoss = parseFloat(design.outputs.headLoss) || 0;
+  const diameter = design.hydraulic.mainDiameter;
+
+  if (headLoss > 5) {
+    recs.push("Increase main pipe diameter to reduce head loss below 5%");
+  } else {
+    recs.push("Head loss is within target (≤ 5%)");
+  }
+
+  if (diameter < 75 && design.project.areaRai > 20) {
+    recs.push("For areas >20 Rai, use a main pipe at least Ø75 mm");
+  }
+
+  const waterDemand = parseFloat(design.outputs.waterDemand) || 0;
+  if (waterDemand > 200000) {
+    recs.push("Select a pump larger than 200 m³/day (≥ 7.5 kW)");
+  } else {
+    recs.push("A medium-size pump is sufficient for this design (~5.5 kW)");
+  }
+
+  if (!recs.length) {
+    recs.push("Design meets key requirements; no major issues flagged");
+  }
+
+  return {
+    recommendations: recs,
+    pumpSelection: {
+      suggestedPower: waterDemand > 200000 ? "7.5 kW" : "5.5 kW",
+      suggestedHead: headLoss > 5 ? "40 m" : "30 m",
+    },
+  };
+}
+
+function initSummaryButtons() {
+  $("show-design-json-btn").addEventListener("click", () => {
+    const req = buildDesignJSON();
+    const res = buildDesignResponseJSON();
+
+    $("design-request-json").textContent = JSON.stringify(req, null, 2);
+    $("design-response-json").textContent = JSON.stringify(res, null, 2);
+
+    openModal("design-json-modal");
+  });
+
+  $("download-report-btn").addEventListener("click", downloadPDFReport);
+}
+
+function downloadPDFReport() {
+  if (!window.jspdf) return;
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+
+  const design = buildDesignJSON();
+  const response = buildDesignResponseJSON();
+
+  let y = 15;
+
+  doc.setFontSize(16);
+  doc.text("AI-Assisted Irrigation Planner - Report", 10, y);
+  y += 10;
+
+  doc.setFontSize(12);
+  doc.text(`Project: ${design.project.name}`, 10, y);
+  y += 6;
+  doc.text(`Location: ${design.project.location}`, 10, y);
+  y += 6;
+  doc.text(`Area: ${design.project.areaRai} Rai`, 10, y);
+  y += 6;
+  doc.text(`Crop: ${design.project.cropType}`, 10, y);
+  y += 10;
+
+  doc.text("Hydraulic Settings:", 10, y);
+  y += 6;
+  doc.text(`Main pipe: Ø${design.hydraulic.mainDiameter} mm`, 10, y);
+  y += 6;
+  doc.text(`Max lateral length: ${design.hydraulic.maxLateral} m`, 10, y);
+  y += 10;
+
+  doc.text("Key Outputs:", 10, y);
+  y += 6;
+  doc.text(`Water demand: ${design.outputs.waterDemand} L/day`, 10, y);
+  y += 6;
+  doc.text(`Pipe length: ${design.outputs.pipeLength} m`, 10, y);
+  y += 6;
+  doc.text(`Head loss: ${design.outputs.headLoss} %`, 10, y);
+  y += 6;
+  doc.text(
+    `Total cost: ฿${design.outputs.totalCost || "N/A"}`,
+    10,
+    y
+  );
+  y += 10;
+
+  doc.text("Validation:", 10, y);
+  y += 6;
+  doc.text(`Status: ${design.outputs.validationStatus}`, 10, y);
+  y += 6;
+  const notes = doc.splitTextToSize(
+    `Notes: ${design.outputs.validationNotes || "-"}`,
+    190
+  );
+  doc.text(notes, 10, y);
+  y += notes.length * 6 + 4;
+
+  doc.text("Recommendations:", 10, y);
+  y += 6;
+  response.recommendations.forEach((r) => {
+    const lines = doc.splitTextToSize("- " + r, 190);
+    doc.text(lines, 10, y);
+    y += lines.length * 6 + 2;
+  });
+
+  doc.save("irrigation_report_thai_units.pdf");
+}
+
+// -------------------------
+// SUMMARY & KPI DESCRIPTION
+// -------------------------
+
+function updateSummaryFromProject(project) {
+  if (!project) {
+    updateCurrentProjectBadge(null);
+    return;
+  }
+  updateCurrentProjectBadge(project);
+
+  const metrics = project.metrics || {};
+  const wd = parseFloat(metrics.waterDemand);
+  const pl = parseFloat(metrics.pipeLength);
+  const hl = parseFloat(metrics.headLoss);
+  const ml = parseFloat(metrics.maxLateral);
+  if (isFinite(wd) && isFinite(pl) && isFinite(hl) && isFinite(ml)) {
+    updateKPIFromPlanner(wd, pl, hl, ml);
+  } else if (lastPlannerDesign) {
+    updateSummaryFromDesign(lastPlannerDesign, getPlannerInputs());
+  }
+}
+
+// Inject KPI description (static text)
+function injectKPIDescription() {
+  const summaryContainer = document.querySelector(".summary-container");
+  if (!summaryContainer) return;
+
+  const kpiInfo = document.createElement("div");
+  kpiInfo.className = "summary-card-large";
+  kpiInfo.innerHTML = `
+    <h3><i class="fas fa-bullseye"></i> System KPIs (Prototype)</h3>
+    <p><strong>Functional KPIs</strong></p>
+    <ul style="margin-left:1rem;">
+      <li><strong>Layout Generation Accuracy</strong> – Deviation of total pipe length vs. baseline/manual (≤ 10%)</li>
+      <li><strong>Hydraulic Validation Compliance</strong> – % of designs passing head loss ≤ 5% (≥ 95%)</li>
+      <li><strong>Water Demand Accuracy</strong> – ETc deviation vs. FAO reference (±5%)</li>
+      <li><strong>BOM Consistency</strong> – BOM correctness vs. real quantities</li>
+    </ul>
+    <p style="margin-top:0.5rem;"><strong>Performance KPIs</strong> (design targets)</p>
+    <ul style="margin-left:1rem;">
+      <li>Layout generation time (≤ 1 minute for ≤ 62 Rai / 10 ha)</li>
+      <li>Hydraulic validation time (≤ 10 seconds)</li>
+      <li>Seasonal simulation time (≤ 5 seconds)</li>
+    </ul>
+  `;
+  summaryContainer.appendChild(kpiInfo);
+}
+
+// -------------------------
+// MODAL: CLOSE WHEN CLICK BACKDROP
+// -------------------------
+
+function initModalCloseOnBackground() {
+  document.querySelectorAll(".modal").forEach((modal) => {
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal) {
+        modal.classList.remove("active");
+      }
     });
-    L.marker(mainStart, { icon: pumpIcon }).addTo(map).bindTooltip('Pump Station');
-
-    // Sub-main pipes (horizontal, medium thickness)
-    const numSubMains = Math.min(5, Math.floor(pipeLength / 150));
-    for (let i = 0; i < numSubMains; i++) {
-        const latOffset = (i - numSubMains / 2) * 0.0006;
-        const subMainStart = [center.lat + latOffset, center.lng - 0.002];
-        const subMainEnd = [center.lat + latOffset, center.lng + 0.002];
-        const subMain = L.polyline([subMainStart, subMainEnd], {
-            color: '#4a90e2',
-            weight: 4,
-            opacity: 0.8
-        });
-        layoutComponents.push(subMain);
-    }
-
-    // Lateral pipes (thinner, perpendicular to sub-mains)
-    const numLaterals = Math.min(8, Math.floor(pipeLength / 100));
-    for (let i = 0; i < numLaterals; i++) {
-        const lngOffset = (i - numLaterals / 2) * 0.0004;
-        const lateralStart = [center.lat - 0.001, center.lng + lngOffset];
-        const lateralEnd = [center.lat + 0.001, center.lng + lngOffset];
-        const lateral = L.polyline([lateralStart, lateralEnd], {
-            color: '#6ba8f0',
-            weight: 2,
-            opacity: 0.7
-        });
-        layoutComponents.push(lateral);
-    }
-
-    // Add valve icons
-    const valveIcon = L.divIcon({
-        className: 'valve-icon',
-        html: '<i class="fas fa-circle" style="color: #e74c3c; font-size: 12px;"></i>',
-        iconSize: [12, 12]
-    });
-    L.marker([center.lat, center.lng], { icon: valveIcon }).addTo(map).bindTooltip('Main Valve');
-
-    pipelineLayer = L.layerGroup(layoutComponents);
-    pipelineLayer.addTo(map);
-
-    // TODO: Future enhancement - if layoutResult contains AI-generated nodes/edges,
-    // use those instead of heuristic grid:
-    // if (layoutResult.nodes && layoutResult.edges) {
-    //     // Draw AI-generated network
-    //     layoutResult.edges.forEach(edge => { ... });
-    // }
-
-    // Fit map to bounds
-    const allBounds = L.latLngBounds(
-        [...bounds.getSouthWest().toArray(), ...bounds.getNorthEast().toArray()]
-    );
-    map.fitBounds(allBounds, { padding: [50, 50] });
-    
-    // Start water flow animation on main pipe
-    if (mainPipe && mainStart && mainEnd) {
-        startWaterFlowAnimation(mainStart, mainEnd);
-    }
+  });
 }
 
-/**
- * Start water flow animation on the main pipe to simulate water movement.
- * Creates animated circle markers that move along the pipe from pump to end.
- */
-function startWaterFlowAnimation(startLatLng, endLatLng) {
-    // Stop any existing animation
-    if (AppState.flowAnimation) {
-        clearInterval(AppState.flowAnimation.interval);
-        AppState.flowAnimation.markers.forEach(m => map.removeLayer(m));
-    }
-    
-    // Interpolate points along the pipe
-    const numPoints = 5;
-    const flowMarkers = [];
-    
-    // Create multiple flow markers
-    for (let i = 0; i < numPoints; i++) {
-        const progress = i / numPoints;
-        const lat = startLatLng[0] + (endLatLng[0] - startLatLng[0]) * progress;
-        const lng = startLatLng[1] + (endLatLng[1] - startLatLng[1]) * progress;
-        
-        const flowIcon = L.divIcon({
-            className: 'water-flow-marker',
-            html: '<div style="width: 12px; height: 12px; border-radius: 50%; background: #4a90e2; border: 2px solid white; box-shadow: 0 0 8px rgba(74, 144, 226, 0.8); animation: pulse 1.5s infinite;"></div>',
-            iconSize: [12, 12],
-            iconAnchor: [6, 6]
-        });
-        
-        const marker = L.marker([lat, lng], { icon: flowIcon }).addTo(map);
-        flowMarkers.push(marker);
-    }
-    
-    // Animate markers moving along the pipe
-    let progress = 0;
-    const speed = 0.02; // Speed of animation (0 to 1 per interval)
-    
-    const interval = setInterval(() => {
-        progress += speed;
-        if (progress > 1) progress = 0; // Loop animation
-        
-        flowMarkers.forEach((marker, i) => {
-            const markerProgress = (progress + i / numPoints) % 1;
-            const lat = startLatLng[0] + (endLatLng[0] - startLatLng[0]) * markerProgress;
-            const lng = startLatLng[1] + (endLatLng[1] - startLatLng[1]) * markerProgress;
-            marker.setLatLng([lat, lng]);
-        });
-    }, 50); // Update every 50ms
-    
-    AppState.flowAnimation = {
-        interval: interval,
-        markers: flowMarkers
-    };
-}
-
-// Add CSS for pulse animation (if not already in styles.css)
-if (!document.getElementById('water-flow-animation-style')) {
-    const style = document.createElement('style');
-    style.id = 'water-flow-animation-style';
-    style.textContent = `
-        @keyframes pulse {
-            0%, 100% { transform: scale(1); opacity: 1; }
-            50% { transform: scale(1.3); opacity: 0.7; }
-        }
-        .water-flow-marker {
-            background: transparent !important;
-            border: none !important;
-        }
-    `;
-    document.head.appendChild(style);
-}
-
-// ============================================
-// VALIDATION
-// ============================================
-
-function validateHydraulics() {
-    const validationNotes = [];
-    let isValid = true;
-    const state = AppState.calculationState;
-
-    if (state.headLoss > 15) {
-        validationNotes.push('Head loss exceeds 15% - consider larger pipe diameter');
-        isValid = false;
-    } else if (state.headLoss > 10) {
-        validationNotes.push('Head loss is high (10-15%) - monitor pressure');
-    } else {
-        validationNotes.push('Head loss is within acceptable range');
-    }
-
-    const maxLateralInput = parseFloat(document.getElementById('max-lateral')?.value || 100);
-    if (state.maxLateralLength < maxLateralInput * 0.8) {
-        validationNotes.push('Maximum lateral length may be too long for current setup');
-        isValid = false;
-    }
-
-    if (state.waterDemand > 100000) {
-        validationNotes.push('High water demand - consider zone splitting');
-    }
-
-    const area = parseFloat(document.getElementById('area')?.value || 10);
-    const diameter = parseFloat(document.getElementById('main-diameter')?.value || 110);
-    if (area > 50 && diameter < 110) {
-        validationNotes.push('Large area detected - consider larger main pipe');
-        isValid = false;
-    }
-
-    AppState.calculationState.validationStatus = isValid ? 'valid' : 'invalid';
-    AppState.calculationState.validationNotes = validationNotes;
-
-    updateValidationDisplay();
-    showNotification(isValid ? 'Validation passed!' : 'Validation issues found', isValid ? 'success' : 'warning');
-}
-
-function updateValidationDisplay() {
-    const card = document.getElementById('validation-card');
-    const status = document.getElementById('validation-status');
-    const notes = document.getElementById('validation-notes');
-    const icon = document.getElementById('validation-icon');
-
-    if (!card || !status || !notes || !icon) return;
-
-    const state = AppState.calculationState;
-
-    if (state.validationStatus === 'valid') {
-        card.className = 'output-card validation-card valid';
-        status.textContent = 'Valid';
-        icon.className = 'fas fa-check-circle';
-        notes.textContent = state.validationNotes.join(' • ');
-    } else if (state.validationStatus === 'invalid') {
-        card.className = 'output-card validation-card invalid';
-        status.textContent = 'Needs Adjustment';
-        icon.className = 'fas fa-exclamation-triangle';
-        notes.textContent = state.validationNotes.join(' • ');
-    } else {
-        card.className = 'output-card validation-card';
-        status.textContent = 'Pending';
-        icon.className = 'fas fa-check-circle';
-        notes.textContent = 'Click "Validate Hydraulics" to check';
-    }
-}
-
-// ============================================
-// BOM DISPLAY
-// ============================================
-
-function showBOM() {
-    const container = document.getElementById('bom-container');
-    const tbody = document.getElementById('bom-tbody');
-
-    if (!container || !tbody) return;
-
-    tbody.innerHTML = '';
-
-    let total = 0;
-    AppState.calculationState.bom.forEach(item => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-            <td>${item.item}</td>
-            <td>${formatNumber(item.quantity)}</td>
-            <td>${item.unit}</td>
-            <td>$${formatNumber(item.unitPrice, 2)}</td>
-            <td>$${formatNumber(item.total, 2)}</td>
-        `;
-        tbody.appendChild(row);
-        total += item.total;
-    });
-
-    const totalRow = document.createElement('tr');
-    totalRow.innerHTML = `
-        <td colspan="4" style="text-align: right; font-weight: 600;">Total:</td>
-        <td style="font-weight: 600;">$${formatNumber(total, 2)}</td>
-    `;
-    tbody.appendChild(totalRow);
-
-    container.style.display = 'block';
-    container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    showNotification('BOM generated successfully!', 'success');
-}
-
-// ============================================
-// FINALIZE DESIGN
-// ============================================
-
-function finalizeDesign() {
-    const project = getCurrentProject();
-    if (!project) {
-        showNotification('Please create or select a project first', 'warning');
-        return;
-    }
-
-    const state = AppState.calculationState;
-    const area = parseFloat(document.getElementById('area')?.value || 10);
-    const kc = parseFloat(document.getElementById('kc')?.value || 0.9);
-    const eto = parseFloat(document.getElementById('eto')?.value || 5.0);
-    const rainfall = parseFloat(document.getElementById('rainfall')?.value || 0);
-    const diameter = parseFloat(document.getElementById('main-diameter')?.value || 110);
-    const maxLateral = parseFloat(document.getElementById('max-lateral')?.value || 100);
-    const zones = calculateZones();
-    const bomTotal = state.bom.reduce((sum, item) => sum + item.total, 0);
-
-    // Update project metrics
-    project.latestMetrics = {
-        demandLday: state.waterDemand,
-        totalPipeLength: state.pipeLength,
-        headLossPct: state.headLoss,
-        maxLateral: state.maxLateralLength,
-        validationOk: state.validationStatus === 'valid',
-        kc,
-        eto,
-        rainfall,
-        mainDiameter: diameter,
-        maxLateral: maxLateral
-    };
-    project.lastUpdated = new Date().toISOString();
-
-    saveProjects();
-    renderProjects();
-
-    // Show modal
-    const modal = document.getElementById('finalize-modal');
-    const modalBody = document.getElementById('modal-body');
-    if (modal && modalBody) {
-        modalBody.innerHTML = `
-            <div style="display: grid; gap: 1.5rem;">
-                <div>
-                    <h3 style="color: var(--primary-green); margin-bottom: 1rem;">
-                        <i class="fas fa-seedling"></i> Farm Parameters
-                    </h3>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
-                        <div><strong>Area:</strong> ${formatNumber(area)} ha</div>
-                        <div><strong>Crop Coefficient:</strong> ${kc}</div>
-                        <div><strong>ET₀:</strong> ${eto} mm/day</div>
-                        <div><strong>Rainfall:</strong> ${rainfall} mm/day</div>
-                    </div>
-                </div>
-                <div>
-                    <h3 style="color: var(--primary-green); margin-bottom: 1rem;">
-                        <i class="fas fa-cog"></i> Hydraulic Settings
-                    </h3>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
-                        <div><strong>Main Pipe:</strong> ${diameter} mm</div>
-                        <div><strong>Max Lateral:</strong> ${maxLateral} m</div>
-                        <div><strong>Zones:</strong> ${zones}</div>
-                        <div><strong>Pipe Length:</strong> ${formatNumber(state.pipeLength)} m</div>
-                    </div>
-                </div>
-                <div>
-                    <h3 style="color: var(--primary-green); margin-bottom: 1rem;">
-                        <i class="fas fa-chart-line"></i> Results
-                    </h3>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
-                        <div><strong>Water Demand:</strong> ${formatNumber(state.waterDemand)} L/day</div>
-                        <div><strong>Head Loss:</strong> ${formatNumber(state.headLoss, 2)}%</div>
-                        <div><strong>Max Lateral Length:</strong> ${formatNumber(state.maxLateralLength)} m</div>
-                        <div><strong>Validation:</strong> ${state.validationStatus === 'valid' ? '✓ Valid' : '⚠ Needs Adjustment'}</div>
-                    </div>
-                </div>
-                <div>
-                    <h3 style="color: var(--primary-green); margin-bottom: 1rem;">
-                        <i class="fas fa-satellite"></i> Satellite / Field Context
-                    </h3>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
-                        <div><strong>NDVI Mean:</strong> ${AppState.satelliteSummary?.ndviMean ? AppState.satelliteSummary.ndviMean.toFixed(3) : 'Not loaded'}</div>
-                        <div><strong>Slope Class:</strong> ${AppState.satelliteSummary?.slopeClass || 'Not loaded'}</div>
-                        <div><strong>Soil Type:</strong> ${AppState.satelliteSummary?.soilType || 'Not loaded'}</div>
-                    </div>
-                </div>
-                <div>
-                    <h3 style="color: var(--primary-green); margin-bottom: 1rem;">
-                        <i class="fas fa-dollar-sign"></i> Estimated Cost
-                    </h3>
-                    <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary-green);">
-                        $${formatNumber(bomTotal, 2)}
-                    </div>
-                </div>
-                ${state.validationNotes.length > 0 ? `
-                    <div style="background: var(--grey-light); padding: 1rem; border-radius: var(--radius-md);">
-                        <h4 style="margin-bottom: 0.5rem;">Validation Notes:</h4>
-                        <ul style="margin-left: 1.5rem;">
-                            ${state.validationNotes.map(note => `<li>${note}</li>`).join('')}
-                        </ul>
-                    </div>
-                ` : ''}
-            </div>
-        `;
-        modal.classList.add('active');
-    }
-
-    showNotification('Design finalized and saved!', 'success');
-}
-
-// ============================================
-// SEASONAL SIMULATION
-// ============================================
-
-function setupMonthlyTable() {
-    const tbody = document.getElementById('monthly-data-tbody');
-    if (!tbody) return;
-
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const defaultEto = [4.5, 5.0, 5.5, 5.8, 5.5, 5.0, 4.8, 4.9, 4.7, 4.5, 4.3, 4.2];
-    const defaultRainfall = [5, 10, 20, 50, 120, 100, 90, 110, 180, 150, 40, 10];
-
-    tbody.innerHTML = months.map((month, i) => `
-        <tr>
-            <td><strong>${month}</strong></td>
-            <td><input type="number" class="monthly-eto" data-month="${i}" value="${defaultEto[i]}" step="0.1" min="0" max="15"></td>
-            <td><input type="number" class="monthly-rainfall" data-month="${i}" value="${defaultRainfall[i]}" step="0.1" min="0" max="300"></td>
-        </tr>
-    `).join('');
-}
-
-function loadScenarioPreset(scenario) {
-    const tbody = document.getElementById('monthly-data-tbody');
-    if (!tbody) return;
-
-    const presets = {
-        normal: {
-            eto: [4.5, 5.0, 5.5, 5.8, 5.5, 5.0, 4.8, 4.9, 4.7, 4.5, 4.3, 4.2],
-            rainfall: [5, 10, 20, 50, 120, 100, 90, 110, 180, 150, 40, 10]
-        },
-        dry: {
-            eto: [5.0, 5.5, 6.0, 6.5, 6.0, 5.5, 5.3, 5.4, 5.2, 5.0, 4.8, 4.7],
-            rainfall: [2, 5, 10, 20, 60, 50, 40, 50, 90, 70, 15, 5]
-        },
-        wet: {
-            eto: [4.0, 4.5, 5.0, 5.2, 5.0, 4.5, 4.3, 4.4, 4.2, 4.0, 3.8, 3.7],
-            rainfall: [10, 20, 40, 80, 180, 150, 140, 170, 250, 220, 70, 20]
-        }
-    };
-
-    const preset = presets[scenario] || presets.normal;
-    tbody.querySelectorAll('.monthly-eto').forEach((input, i) => {
-        input.value = preset.eto[i];
-    });
-    tbody.querySelectorAll('.monthly-rainfall').forEach((input, i) => {
-        input.value = preset.rainfall[i];
-    });
-}
-
-function runSeasonalSimulation() {
-    const area = parseFloat(document.getElementById('area')?.value || 10);
-    const kcInitial = parseFloat(document.getElementById('kc-initial')?.value || 0.3);
-    const kcMid = parseFloat(document.getElementById('kc-mid')?.value || 1.0);
-    const kcLate = parseFloat(document.getElementById('kc-late')?.value || 0.7);
-
-    const monthlyData = [];
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-    document.querySelectorAll('.monthly-eto').forEach((input, i) => {
-        const eto = parseFloat(input.value);
-        const rainfallInput = document.querySelector(`.monthly-rainfall[data-month="${i}"]`);
-        const rainfall = parseFloat(rainfallInput?.value || 0);
-
-        // Determine Kc based on month (simplified: initial 3, mid 6, late 3)
-        let kc;
-        if (i < 3) kc = kcInitial;
-        else if (i < 9) kc = kcMid;
-        else kc = kcLate;
-
-        const etc = kc * eto;
-        const effectiveRainfall = rainfall * 0.8; // 80% efficiency
-        const netIrrigation = Math.max(0, etc - effectiveRainfall);
-        const waterDemand = netIrrigation * area * 10000; // L/day
-
-        monthlyData.push({
-            month: months[i],
-            eto,
-            rainfall,
-            kc,
-            waterDemand
-        });
-    });
-
-    // Find peak month for water demand
-    const peakMonth = monthlyData.reduce((max, curr) => 
-        curr.waterDemand > max.waterDemand ? curr : max
-    );
-
-    // Find peak rainfall month
-    const peakRainfallMonth = monthlyData.reduce((max, curr) => 
-        curr.rainfall > max.rainfall ? curr : max
-    );
-
-    // Find peak ET₀ month
-    const peakETOMonth = monthlyData.reduce((max, curr) => 
-        curr.eto > max.eto ? curr : max
-    );
-
-    // Calculate averages
-    const avgDemand = monthlyData.reduce((sum, m) => sum + m.waterDemand, 0) / 12;
-    const avgRainfall = monthlyData.reduce((sum, m) => sum + m.rainfall, 0) / 12;
-    const avgETO = monthlyData.reduce((sum, m) => sum + m.eto, 0) / 12;
-
-    // Update charts
-    updateSeasonalChart(monthlyData);
-    updateSeasonalETOChart(monthlyData);
-
-    // Update summary
-    const summaryContent = document.getElementById('seasonal-summary-content');
-    if (summaryContent) {
-        summaryContent.innerHTML = `
-            <div style="display: grid; gap: 1rem;">
-                <div>
-                    <strong>Peak Water Demand Month:</strong> ${peakMonth.month}
-                </div>
-                <div>
-                    <strong>Peak Demand:</strong> ${formatNumber(peakMonth.waterDemand)} L/day
-                </div>
-                <div>
-                    <strong>Average Monthly Demand:</strong> ${formatNumber(avgDemand)} L/day
-                </div>
-                <div>
-                    <strong>Highest Rainfall Month:</strong> ${peakRainfallMonth.month} (${formatNumber(peakRainfallMonth.rainfall)} mm/day)
-                </div>
-                <div>
-                    <strong>Highest ET₀ Month:</strong> ${peakETOMonth.month} (${formatNumber(peakETOMonth.eto, 1)} mm/day)
-                </div>
-                <div style="margin-top: 1rem; padding: 1rem; background: var(--grey-light); border-radius: var(--radius-sm);">
-                    <strong>Design Recommendation:</strong><br>
-                    System should be sized for peak month demand (${peakMonth.month}: ${formatNumber(peakMonth.waterDemand)} L/day). 
-                    Peak rainfall occurs in ${peakRainfallMonth.month}, while peak ET₀ is in ${peakETOMonth.month}.
-                </div>
-            </div>
-        `;
-    }
-
-    showNotification('Seasonal simulation completed!', 'success');
-}
-
-function updateSeasonalChart(monthlyData) {
-    const ctx = document.getElementById('seasonal-chart');
-    if (!ctx) return;
-
-    if (AppState.charts.seasonal) {
-        AppState.charts.seasonal.destroy();
-    }
-
-    AppState.charts.seasonal = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: monthlyData.map(d => d.month),
-            datasets: [{
-                label: 'Water Demand (L/day)',
-                data: monthlyData.map(d => d.waterDemand),
-                borderColor: '#2d8659',
-                backgroundColor: 'rgba(45, 134, 89, 0.1)',
-                tension: 0.4,
-                fill: true
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: true,
-            plugins: {
-                legend: {
-                    display: true,
-                    position: 'top'
-                }
-            },
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    title: {
-                        display: true,
-                        text: 'Water Demand (L/day)'
-                    }
-                }
-            }
-        }
-    });
-}
-
-function updateSeasonalETOChart(monthlyData) {
-    const ctx = document.getElementById('seasonal-eto-chart');
-    if (!ctx) return;
-
-    if (AppState.charts.seasonalETO) {
-        AppState.charts.seasonalETO.destroy();
-    }
-
-    AppState.charts.seasonalETO = new Chart(ctx, {
-        type: 'bar',
-        data: {
-            labels: monthlyData.map(d => d.month),
-            datasets: [
-                {
-                    label: 'ET₀ (mm/day)',
-                    data: monthlyData.map(d => d.eto),
-                    backgroundColor: 'rgba(74, 144, 226, 0.7)',
-                    borderColor: '#4a90e2',
-                    borderWidth: 1,
-                    yAxisID: 'y'
-                },
-                {
-                    label: 'Rainfall (mm/day)',
-                    data: monthlyData.map(d => d.rainfall),
-                    type: 'line',
-                    borderColor: '#2d8659',
-                    backgroundColor: 'rgba(45, 134, 89, 0.1)',
-                    tension: 0.4,
-                    fill: true,
-                    yAxisID: 'y1'
-                }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: true,
-            interaction: {
-                mode: 'index',
-                intersect: false,
-            },
-            plugins: {
-                legend: {
-                    display: true,
-                    position: 'top'
-                }
-            },
-            scales: {
-                y: {
-                    type: 'linear',
-                    display: true,
-                    position: 'left',
-                    beginAtZero: true,
-                    title: {
-                        display: true,
-                        text: 'ET₀ (mm/day)'
-                    }
-                },
-                y1: {
-                    type: 'linear',
-                    display: true,
-                    position: 'right',
-                    beginAtZero: true,
-                    title: {
-                        display: true,
-                        text: 'Rainfall (mm/day)'
-                    },
-                    grid: {
-                        drawOnChartArea: false
-                    }
-                }
-            }
-        }
-    });
-}
-
-// ============================================
-// SUMMARY & REPORTS
-// ============================================
-
-function updateSummarySection() {
-    const state = AppState.calculationState;
-    const project = getCurrentProject();
-
-    // Update KPIs
-    const kpiHeadloss = document.getElementById('kpi-headloss');
-    if (kpiHeadloss) {
-        kpiHeadloss.textContent = formatNumber(state.headLoss, 2) + '%';
-        const bar = document.getElementById('kpi-headloss-bar');
-        if (bar) {
-            bar.style.width = Math.min(100, (state.headLoss / 5) * 100) + '%';
-            bar.style.background = state.headLoss > 5 ? '#e74c3c' : '#2d8659';
-        }
-    }
-
-    const kpiLateral = document.getElementById('kpi-lateral');
-    if (kpiLateral) {
-        kpiLateral.textContent = formatNumber(state.maxLateralLength) + ' m';
-        const bar = document.getElementById('kpi-lateral-bar');
-        if (bar) {
-            const maxLateral = parseFloat(document.getElementById('max-lateral')?.value || 100);
-            bar.style.width = Math.min(100, (state.maxLateralLength / maxLateral) * 100) + '%';
-        }
-    }
-
-    const kpiCost = document.getElementById('kpi-cost');
-    if (kpiCost) {
-        const total = state.bom.reduce((sum, item) => sum + item.total, 0);
-        // Format with commas and always 2 decimal places
-        const formatted = new Intl.NumberFormat('en-US', {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2
-        }).format(total);
-        kpiCost.textContent = '$' + formatted;
-    }
-
-    // Update budget display
-    const kpiBudget = document.getElementById('kpi-budget');
-    if (kpiBudget) {
-        const project = getCurrentProject();
-        if (project && project.budget) {
-            const total = state.bom.reduce((sum, item) => sum + item.total, 0);
-            const budget = project.budget;
-            const percentage = (total / budget) * 100;
-            kpiBudget.textContent = `Budget: $${formatNumber(budget, 2)} (${formatNumber(percentage, 1)}% used)`;
-            kpiBudget.style.color = percentage > 100 ? '#e74c3c' : percentage > 80 ? '#f39c12' : 'var(--text-medium)';
-        } else {
-            kpiBudget.textContent = 'Budget: Not set';
-            kpiBudget.style.color = 'var(--text-medium)';
-        }
-    }
-
-    const kpiPipelength = document.getElementById('kpi-pipelength');
-    if (kpiPipelength) {
-        kpiPipelength.textContent = formatNumber(state.pipeLength) + ' m';
-    }
-
-    // Update charts
-    updateCostChart();
-    updateZoneChart();
-
-    // Update project summary
-    const summaryContent = document.getElementById('project-summary-content');
-    if (summaryContent) {
-        if (project) {
-            summaryContent.innerHTML = `
-                <div style="display: grid; gap: 1rem;">
-                    <div><strong>Project:</strong> ${project.name}</div>
-                    <div><strong>Location:</strong> ${project.location}</div>
-                    <div><strong>Area:</strong> ${project.area} ha</div>
-                    <div><strong>Crop:</strong> ${project.crop}</div>
-                    <div><strong>Last Updated:</strong> ${formatDate(project.lastUpdated)}</div>
-                    <div style="margin-top: 1rem; padding: 1rem; background: var(--grey-light); border-radius: var(--radius-sm);">
-                        <strong>Latest Metrics:</strong><br>
-                        Water Demand: ${formatNumber(project.latestMetrics?.demandLday || 0)} L/day<br>
-                        Pipe Length: ${formatNumber(project.latestMetrics?.totalPipeLength || 0)} m<br>
-                        Head Loss: ${formatNumber(project.latestMetrics?.headLossPct || 0)}%<br>
-                        Validation: ${project.latestMetrics?.validationOk ? '✓ OK' : '⚠ Needs Adjustment'}
-                    </div>
-                </div>
-            `;
-        } else {
-            summaryContent.innerHTML = '<p>No project selected. Go to Dashboard to select or create a project.</p>';
-        }
-    }
-}
-
-function updateCostChart() {
-    const ctx = document.getElementById('cost-chart');
-    if (!ctx) return;
-
-    const bom = AppState.calculationState.bom;
-    if (bom.length === 0) return;
-
-    if (AppState.charts.cost) {
-        AppState.charts.cost.destroy();
-    }
-
-    AppState.charts.cost = new Chart(ctx, {
-        type: 'pie',
-        data: {
-            labels: bom.map(item => item.item),
-            datasets: [{
-                data: bom.map(item => item.total),
-                backgroundColor: [
-                    '#2d8659',
-                    '#4a90e2',
-                    '#6ba8f0',
-                    '#3da372',
-                    '#f39c12',
-                    '#e74c3c',
-                    '#9b59b6'
-                ]
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: true,
-            plugins: {
-                legend: {
-                    position: 'right'
-                }
-            }
-        }
-    });
-}
-
-function updateZoneChart() {
-    const ctx = document.getElementById('zone-chart');
-    if (!ctx) return;
-
-    const zones = calculateZones();
-    const pipeLength = AppState.calculationState.pipeLength;
-    const lengthPerZone = Math.ceil(pipeLength / zones);
-
-    if (AppState.charts.zone) {
-        AppState.charts.zone.destroy();
-    }
-
-    const zoneData = Array.from({ length: zones }, (_, i) => ({
-        label: `Zone ${i + 1}`,
-        length: lengthPerZone
-    }));
-
-    AppState.charts.zone = new Chart(ctx, {
-        type: 'bar',
-        data: {
-            labels: zoneData.map(z => z.label),
-            datasets: [{
-                label: 'Pipe Length (m)',
-                data: zoneData.map(z => z.length),
-                backgroundColor: '#2d8659'
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: true,
-            plugins: {
-                legend: {
-                    display: false
-                }
-            },
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    title: {
-                        display: true,
-                        text: 'Pipe Length (m)'
-                    }
-                }
-            }
-        }
-    });
-}
-
-function downloadReport() {
-    const project = getCurrentProject();
-    const state = AppState.calculationState;
-
-    if (!project) {
-        showNotification('Please create or select a project first', 'warning');
-        return;
-    }
-
-    // Use jsPDF to generate PDF report
-    if (typeof window.jspdf !== 'undefined') {
-        const { jsPDF } = window.jspdf;
-        const doc = new jsPDF();
-
-        // Title
-        doc.setFontSize(18);
-        doc.text('Irrigation System Design Report', 20, 20);
-
-        // Project Info
-        doc.setFontSize(12);
-        doc.text(`Project: ${project.name}`, 20, 35);
-        doc.text(`Location: ${project.location}`, 20, 42);
-        doc.text(`Area: ${project.area} ha`, 20, 49);
-        doc.text(`Crop: ${project.crop}`, 20, 56);
-
-        // Results
-        let y = 70;
-        doc.setFontSize(14);
-        doc.text('Design Results', 20, y);
-        y += 10;
-        doc.setFontSize(10);
-        doc.text(`Water Demand: ${formatNumber(state.waterDemand)} L/day`, 20, y);
-        y += 7;
-        doc.text(`Total Pipe Length: ${formatNumber(state.pipeLength)} m`, 20, y);
-        y += 7;
-        doc.text(`Head Loss: ${formatNumber(state.headLoss, 2)}%`, 20, y);
-        y += 7;
-        doc.text(`Max Lateral Length: ${formatNumber(state.maxLateralLength)} m`, 20, y);
-        y += 7;
-        doc.text(`Validation: ${state.validationStatus === 'valid' ? 'OK' : 'Needs Adjustment'}`, 20, y);
-
-        // Satellite Data
-        if (AppState.satelliteSummary) {
-            y += 15;
-            doc.setFontSize(14);
-            doc.text('Satellite / Field Context', 20, y);
-            y += 10;
-            doc.setFontSize(10);
-            doc.text(`NDVI Mean: ${AppState.satelliteSummary.ndviMean ? AppState.satelliteSummary.ndviMean.toFixed(3) : 'N/A'}`, 20, y);
-            y += 7;
-            doc.text(`Slope Class: ${AppState.satelliteSummary.slopeClass || 'N/A'}`, 20, y);
-            y += 7;
-            doc.text(`Soil Type: ${AppState.satelliteSummary.soilType || 'N/A'}`, 20, y);
-        }
-
-        // BOM
-        y += 15;
-        doc.setFontSize(14);
-        doc.text('Bill of Materials', 20, y);
-        y += 10;
-        doc.setFontSize(10);
-        state.bom.forEach(item => {
-            doc.text(`${item.item}: ${item.quantity} ${item.unit} - $${formatNumber(item.total, 2)}`, 20, y);
-            y += 7;
-        });
-
-        const total = state.bom.reduce((sum, item) => sum + item.total, 0);
-        y += 5;
-        doc.setFontSize(12);
-        doc.text(`Total Cost: $${formatNumber(total, 2)}`, 20, y);
-
-        // Save PDF
-        doc.save(`${project.name.replace(/\s+/g, '_')}_Report.pdf`);
-        showNotification('Report downloaded successfully!', 'success');
-    } else {
-        // Fallback: show data in alert or console
-        console.log('Report Data:', { project, state });
-        showNotification('PDF library not loaded. Check console for report data.', 'warning');
-    }
-}
-
-// ============================================
-// DESIGN JSON DISPLAY
-// ============================================
-
-/**
- * Show design request and response JSON in a modal for developer demo/debugging.
- */
-function showDesignJSON() {
-    const requestJson = buildDesignRequestFromUI();
-    const responseJson = buildDesignResponseFromState();
-    
-    const requestEl = document.getElementById('design-request-json');
-    const responseEl = document.getElementById('design-response-json');
-    const modal = document.getElementById('design-json-modal');
-    
-    if (requestEl && responseEl && modal) {
-        requestEl.textContent = JSON.stringify(requestJson, null, 2);
-        responseEl.textContent = JSON.stringify(responseJson, null, 2);
-        modal.classList.add('active');
-        
-        // Also log to console for easy copy-paste
-        console.log('Design Request:', requestJson);
-        console.log('Design Response:', responseJson);
-    }
-}
-
-// ============================================
-// UTILITY FUNCTIONS
-// ============================================
-
-function formatNumber(num, decimals = 0) {
-    return new Intl.NumberFormat('en-US', {
-        minimumFractionDigits: decimals,
-        maximumFractionDigits: decimals
-    }).format(num);
-}
-
-function formatDate(dateString) {
-    if (!dateString) return 'N/A';
-    const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
-}
-
-function closeModal(modalId) {
-    const modal = document.getElementById(modalId);
-    if (modal) {
-        modal.classList.remove('active');
-    }
-}
-
-function showNotification(message, type = 'info') {
-    const notification = document.createElement('div');
-    notification.style.cssText = `
-        position: fixed;
-        top: 100px;
-        right: 20px;
-        background: ${type === 'success' ? 'var(--primary-green)' : type === 'warning' ? '#f39c12' : 'var(--soft-blue)'};
-        color: white;
-        padding: 1rem 1.5rem;
-        border-radius: var(--radius-md);
-        box-shadow: var(--shadow-lg);
-        z-index: 3000;
-        animation: slideInRight 0.3s ease-out;
-        max-width: 300px;
-    `;
-    notification.textContent = message;
-    document.body.appendChild(notification);
-
-    setTimeout(() => {
-        notification.style.animation = 'slideOutRight 0.3s ease-out';
-        setTimeout(() => notification.remove(), 300);
-    }, 3000);
-}
-
-// Add notification animations
-const style = document.createElement('style');
-style.textContent = `
-    @keyframes slideInRight {
-        from {
-            transform: translateX(100%);
-            opacity: 0;
-        }
-        to {
-            transform: translateX(0);
-            opacity: 1;
-        }
-    }
-    @keyframes slideOutRight {
-        from {
-            transform: translateX(0);
-            opacity: 1;
-        }
-        to {
-            transform: translateX(100%);
-            opacity: 0;
-        }
-    }
-`;
-document.head.appendChild(style);
+// -------------------------
+// INIT
+// -------------------------
+
+document.addEventListener("DOMContentLoaded", () => {
+  initSidebar();
+  initPlannerInputs();
+  initializeMap();
+  setupMonthlyTable();
+  loadScenarioPreset("normal");
+  initSummaryButtons();
+  initModalCloseOnBackground();
+  injectKPIDescription();
+
+  // Initial design compute to populate dashboards/summary
+  const initialInputs = getPlannerInputs();
+  const initialDesign = buildDesignFromInputs(initialInputs);
+  lastPlannerDesign = initialDesign;
+  updateSummaryFromDesign(initialDesign, initialInputs);
+
+  $("new-project-btn").addEventListener("click", () => {
+    $("project-name-input").value = "";
+    $("project-location-input").value = "";
+    $("project-area-input").value = 10;
+    $("project-crop-input").value = "Sugarcane";
+
+    const saveBtn = $("save-project-btn");
+    saveBtn.textContent = "Create Project";
+    saveBtn.onclick = saveProjectFromModal;
+
+    openModal("new-project-modal");
+  });
+
+  $("scenario-preset").addEventListener("change", (e) => {
+    loadScenarioPreset(e.target.value);
+  });
+
+  $("run-seasonal-sim").addEventListener("click", runSeasonalSimulation);
+
+  fillFakeSatelliteData();
+  onRecalculate(); // initial calculation so outputs aren't zero
+});
